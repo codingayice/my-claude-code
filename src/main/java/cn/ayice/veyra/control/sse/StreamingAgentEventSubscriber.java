@@ -1,7 +1,7 @@
 package cn.ayice.veyra.control.sse;
 
-import cn.ayice.veyra.host.event.AgentEvent;
-import cn.ayice.veyra.host.event.AgentEventSubscriber;
+import cn.ayice.veyra.session.event.AgentEvent;
+import cn.ayice.veyra.session.event.AgentEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;

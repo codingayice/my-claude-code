@@ -1,6 +1,6 @@
 <configuration>
     <!-- Send all logs to stderr so stdout only contains the AI response stream -->
-    <appender name="FRONTEND" class="cn.ayice.veyra.host.log.Slf4jLogAppender">
+    <appender name="FRONTEND" class="cn.ayice.veyra.session.log.Slf4jLogAppender">
         <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [requestId=%X{requestId:-} sessionId=%X{sessionId:-} runId=%X{runId:-}] - %msg%n</pattern>
     </appender>
 

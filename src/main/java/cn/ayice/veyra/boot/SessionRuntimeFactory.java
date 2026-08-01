@@ -1,57 +1,62 @@
 package cn.ayice.veyra.boot;
 
 import cn.ayice.veyra.config.AppConfig;
-import cn.ayice.veyra.conversation.context.ContextBuilder;
-import cn.ayice.veyra.conversation.context.compaction.AutoCompactConfig;
-import cn.ayice.veyra.conversation.context.compaction.ConversationChunker;
-import cn.ayice.veyra.conversation.context.compaction.LlmSummaryCompactor;
-import cn.ayice.veyra.conversation.context.compaction.SessionCheckpointState;
-import cn.ayice.veyra.conversation.context.compaction.SessionSummaryCoordinator;
-import cn.ayice.veyra.conversation.context.compaction.SessionSummaryConfig;
-import cn.ayice.veyra.conversation.context.compaction.SessionSummaryGenerator;
-import cn.ayice.veyra.host.SessionRuntime;
-import cn.ayice.veyra.host.SessionRuntimeCreator;
-import cn.ayice.veyra.host.ToolApprovalQueue;
-import cn.ayice.veyra.host.event.SessionAgentEventSink;
-import cn.ayice.veyra.host.event.SessionEventStream;
+import cn.ayice.veyra.context.ContextService;
+import cn.ayice.veyra.compaction.AutoCompactConfig;
+import cn.ayice.veyra.compaction.ConversationChunker;
+import cn.ayice.veyra.compaction.LlmSummaryCompactor;
+import cn.ayice.veyra.compaction.SessionCheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryCoordinator;
+import cn.ayice.veyra.compaction.SessionSummaryConfig;
+import cn.ayice.veyra.compaction.SessionSummaryGenerator;
+import cn.ayice.veyra.session.SessionRuntime;
+import cn.ayice.veyra.session.SessionRuntimeCreator;
+import cn.ayice.veyra.session.ToolApprovalQueue;
+import cn.ayice.veyra.session.event.SessionAgentEventSink;
+import cn.ayice.veyra.session.event.SessionEventStream;
 import cn.ayice.veyra.interaction.command.SlashCommands;
 import cn.ayice.veyra.llm.AIService;
-import cn.ayice.veyra.conversation.memory.MemoryContextBuilder;
-import cn.ayice.veyra.kernel.memory.MemoryExtractionCoordinator;
-import cn.ayice.veyra.conversation.memory.MemoryFileStore;
-import cn.ayice.veyra.conversation.memory.MemoryPaths;
-import cn.ayice.veyra.conversation.memory.MemoryRecallService;
-import cn.ayice.veyra.conversation.memory.MemoryService;
-import cn.ayice.veyra.tooling.permission.PermissionContext;
-import cn.ayice.veyra.tooling.permission.PermissionContextStore;
-import cn.ayice.veyra.tooling.permission.PermissionMode;
-import cn.ayice.veyra.kernel.agent.AgentLoop;
-import cn.ayice.veyra.kernel.subagent.SubagentRuntime;
-import cn.ayice.veyra.tooling.task.AgentTaskManager;
-import cn.ayice.veyra.tooling.task.BackgroundManager;
-import cn.ayice.veyra.kernel.chat.ChatLoop;
-import cn.ayice.veyra.conversation.transcript.StoreBackedTranscriptRecorder;
-import cn.ayice.veyra.conversation.transcript.TranscriptStore;
-import cn.ayice.veyra.tooling.BaseTool;
-import cn.ayice.veyra.tooling.ToolDispatcher;
-import cn.ayice.veyra.tooling.ToolRegistry;
-import cn.ayice.veyra.tooling.builtin.AgentTool;
-import cn.ayice.veyra.tooling.builtin.BackgroundRunTool;
-import cn.ayice.veyra.tooling.builtin.BashTool;
-import cn.ayice.veyra.tooling.builtin.CheckTaskTool;
-import cn.ayice.veyra.tooling.builtin.FileEditTool;
-import cn.ayice.veyra.tooling.builtin.FileReadTool;
-import cn.ayice.veyra.tooling.builtin.FileWriteTool;
-import cn.ayice.veyra.tooling.builtin.GlobTool;
-import cn.ayice.veyra.tooling.builtin.GrepTool;
-import cn.ayice.veyra.kernel.memory.MemoryTool;
-import cn.ayice.veyra.tooling.builtin.StopTaskTool;
-import cn.ayice.veyra.tooling.builtin.TodoWriteTool;
-import cn.ayice.veyra.tooling.state.FileStateCache;
-import cn.ayice.veyra.tooling.state.TodoManager;
+import cn.ayice.veyra.memory.MemoryContextBuilder;
+import cn.ayice.veyra.memory.extraction.MemoryExtractionCoordinator;
+import cn.ayice.veyra.memory.MemoryFileStore;
+import cn.ayice.veyra.memory.MemoryPaths;
+import cn.ayice.veyra.memory.MemoryRecallService;
+import cn.ayice.veyra.memory.MemoryService;
+import cn.ayice.veyra.tool.permission.PermissionContext;
+import cn.ayice.veyra.tool.permission.PermissionContextStore;
+import cn.ayice.veyra.tool.permission.PermissionMode;
+import cn.ayice.veyra.runtime.agent.AgentLoop;
+import cn.ayice.veyra.subagent.AgentProfile;
+import cn.ayice.veyra.subagent.SubagentRuntime;
+import cn.ayice.veyra.subagent.AgentTaskManager;
+import cn.ayice.veyra.subagent.SubagentService;
+import cn.ayice.veyra.tool.background.BackgroundManager;
+import cn.ayice.veyra.runtime.chat.ChatLoop;
+import cn.ayice.veyra.session.persistence.StoreBackedTranscriptRecorder;
+import cn.ayice.veyra.session.persistence.TranscriptStore;
+import cn.ayice.veyra.tool.BaseTool;
+import cn.ayice.veyra.tool.ToolCatalog;
+import cn.ayice.veyra.tool.ToolDispatcher;
+import cn.ayice.veyra.tool.ToolRegistry;
+import cn.ayice.veyra.subagent.tool.AgentTool;
+import cn.ayice.veyra.tool.background.BackgroundRunTool;
+import cn.ayice.veyra.tool.builtin.BashTool;
+import cn.ayice.veyra.subagent.tool.CheckTaskTool;
+import cn.ayice.veyra.tool.builtin.FileEditTool;
+import cn.ayice.veyra.tool.builtin.FileReadTool;
+import cn.ayice.veyra.tool.builtin.FileWriteTool;
+import cn.ayice.veyra.tool.builtin.GlobTool;
+import cn.ayice.veyra.tool.builtin.GrepTool;
+import cn.ayice.veyra.memory.tool.MemoryTool;
+import cn.ayice.veyra.subagent.tool.StopTaskTool;
+import cn.ayice.veyra.tool.builtin.TodoWriteTool;
+import cn.ayice.veyra.tool.state.FileStateCache;
+import cn.ayice.veyra.tool.state.TodoManager;
+import cn.ayice.veyra.tool.permission.AgentPermissionPolicy;
 import dev.langchain4j.data.message.ChatMessage;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
 import org.slf4j.Logger;
@@ -72,7 +77,7 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
     private final Executor ioExecutor;
     private final AIService ai;
     private final MemoryService memoryService;
-    private final MemoryContextBuilder memoryContextBuilder;
+    private final MemoryContextBuilder memoryContextService;
 
     /**
      * 使用全局配置、转录存储和受 Spring 管理的线程池创建会话工厂。
@@ -100,7 +105,7 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
                 config.getMemoryMaxScannedTopics()
         );
         this.memoryService = new MemoryService(store);
-        this.memoryContextBuilder = new MemoryContextBuilder(
+        this.memoryContextService = new MemoryContextBuilder(
                 memoryService,
                 store,
                 new MemoryRecallService(store),
@@ -123,35 +128,43 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
         SessionAgentEventSink eventSink = new SessionAgentEventSink(events);
         StoreBackedTranscriptRecorder recorder = new StoreBackedTranscriptRecorder(sessionId, transcriptStore);
 
-        // Registry 决定模型可见的工具，Dispatcher 决定实际可执行的工具；所有工具必须同时注册到两者。
-        ToolRegistry registry = new ToolRegistry();
-        ToolDispatcher dispatcher = new ToolDispatcher();
         FileStateCache fileStateCache = new FileStateCache();
         SubagentRuntime agentRuntime = new SubagentRuntime(
-                ai, config, memoryService, confirmation, eventSink, permissionContextStore, ioExecutor);
+                ai,
+                config,
+                confirmation,
+                eventSink,
+                permissionContextStore,
+                this::createSubagentToolCatalog
+        );
         AgentTaskManager agentTaskManager = new AgentTaskManager(agentRuntime, taskExecutor, eventSink::emit);
-        register(registry, dispatcher, new BashTool());
-        register(registry, dispatcher, new FileReadTool(fileStateCache));
-        register(registry, dispatcher, new FileEditTool(fileStateCache));
-        register(registry, dispatcher, new FileWriteTool(fileStateCache));
-        register(registry, dispatcher, new GlobTool());
-        register(registry, dispatcher, new GrepTool(ioExecutor));
-        register(registry, dispatcher, new AgentTool(agentTaskManager));
+        SubagentService subagentService = new SubagentService(agentTaskManager);
         BackgroundManager backgroundManager = new BackgroundManager(ioExecutor, eventSink::emit);
-        register(registry, dispatcher, new BackgroundRunTool(backgroundManager));
-        register(registry, dispatcher, new CheckTaskTool(agentTaskManager, backgroundManager));
-        register(registry, dispatcher, new StopTaskTool(agentTaskManager, backgroundManager));
-        register(registry, dispatcher, new MemoryTool(memoryService));
+        TodoManager todoManager = new TodoManager(eventSink::emit);
+        ToolCatalog toolCatalog = ToolCatalog.create(List.of(
+                new BashTool(),
+                new FileReadTool(fileStateCache),
+                new FileEditTool(fileStateCache),
+                new FileWriteTool(fileStateCache),
+                new GlobTool(),
+                new GrepTool(ioExecutor),
+                new AgentTool(subagentService),
+                new BackgroundRunTool(backgroundManager),
+                new CheckTaskTool(subagentService, backgroundManager),
+                new StopTaskTool(subagentService, backgroundManager),
+                new MemoryTool(memoryService),
+                new TodoWriteTool(todoManager)
+        ), fileStateCache);
+        ToolRegistry registry = toolCatalog.registry();
+        ToolDispatcher dispatcher = toolCatalog.dispatcher();
 
         // 上下文、记忆和压缩服务共享同一份会话工具元数据与持久记忆目录。
-        TodoManager todoManager = new TodoManager(eventSink::emit);
-        register(registry, dispatcher, new TodoWriteTool(todoManager));
         AutoCompactConfig compactConfig = AutoCompactConfig.from(config);
-        ContextBuilder contextBuilder = new ContextBuilder(
+        ContextService contextBuilder = new ContextService(
                 registry.getAllSpecs(),
                 registry.getDescriptions(),
                 config,
-                memoryContextBuilder,
+                memoryContextService,
                 compactConfig
         );
         SessionCheckpointState checkpointState = new SessionCheckpointState();
@@ -189,7 +202,7 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
                 todoManager,
                 compactConfig,
                 config.getMaxRounds(),
-                agentTaskManager,
+                subagentService,
                 eventSink,
                 checkpointState,
                 sessionSummaryCoordinator,
@@ -225,11 +238,20 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
     }
 
     /**
-     * 将工具同时注册到模型工具目录和执行分发器，保持可见性与可执行性一致。
+     * 在 Boot 装配边界为一次子 Agent 执行创建独占工具实例和文件状态缓存。
      */
-    private static void register(ToolRegistry registry, ToolDispatcher dispatcher, BaseTool tool) {
-        registry.register(tool);
-        dispatcher.register(tool);
+    private ToolCatalog createSubagentToolCatalog(AgentProfile profile) {
+        FileStateCache fileStateCache = new FileStateCache();
+        AgentPermissionPolicy policy = profile.permissionPolicy();
+        List<BaseTool> tools = new ArrayList<>();
+        tools.add(new FileReadTool(fileStateCache));
+        tools.add(new FileEditTool(fileStateCache));
+        tools.add(new FileWriteTool(fileStateCache));
+        tools.add(new GlobTool());
+        tools.add(new GrepTool(ioExecutor));
+        tools.add(new BashTool(policy.readOnlyBash()));
+        tools.add(new MemoryTool(memoryService));
+        return ToolCatalog.create(tools, fileStateCache).profile(profile.toolProfile());
     }
 
     /**

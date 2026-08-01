@@ -1,8 +1,8 @@
 package cn.ayice.veyra.control.api;
 
-import cn.ayice.veyra.host.RuntimeHost;
-import cn.ayice.veyra.host.event.AgentEvent;
-import cn.ayice.veyra.host.event.SessionEventStream;
+import cn.ayice.veyra.runtime.RuntimeHost;
+import cn.ayice.veyra.session.event.AgentEvent;
+import cn.ayice.veyra.session.event.SessionEventStream;
 import cn.ayice.veyra.control.sse.StreamingAgentEventSubscriber;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

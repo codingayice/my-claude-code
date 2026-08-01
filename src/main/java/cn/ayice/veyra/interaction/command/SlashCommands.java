@@ -1,7 +1,7 @@
 package cn.ayice.veyra.interaction.command;
 
-import cn.ayice.veyra.conversation.memory.MemoryExtractionStatus;
-import cn.ayice.veyra.conversation.memory.MemoryService;
+import cn.ayice.veyra.memory.MemoryExtractionStatus;
+import cn.ayice.veyra.memory.MemoryService;
 
 import java.util.Objects;
 import java.util.function.Supplier;

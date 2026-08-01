@@ -1,13 +1,14 @@
 package cn.ayice.veyra.boot;
 
 import cn.ayice.veyra.config.AppConfig;
-import cn.ayice.veyra.host.RuntimeHost;
-import cn.ayice.veyra.host.SessionRegistry;
-import cn.ayice.veyra.kernel.RunCoordinator;
+import cn.ayice.veyra.runtime.RuntimeHost;
+import cn.ayice.veyra.session.SessionRegistry;
+import cn.ayice.veyra.session.SessionService;
+import cn.ayice.veyra.runtime.RunCoordinator;
 import cn.ayice.veyra.control.document.DocumentExportService;
-import cn.ayice.veyra.conversation.transcript.SessionPathResolver;
-import cn.ayice.veyra.conversation.transcript.TranscriptRestorer;
-import cn.ayice.veyra.conversation.transcript.TranscriptStore;
+import cn.ayice.veyra.session.persistence.SessionPathResolver;
+import cn.ayice.veyra.session.persistence.TranscriptRestorer;
+import cn.ayice.veyra.session.persistence.TranscriptStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -100,6 +101,14 @@ public class RuntimeConfiguration {
     }
 
     /**
+     * 创建运行编排访问会话状态和持久化数据的统一服务入口。
+     */
+    @Bean
+    public SessionService sessionService(SessionRegistry sessionRegistry) {
+        return new SessionService(sessionRegistry);
+    }
+
+    /**
      * 创建 Agent 与 Chat 共用的 Run 生命周期协调器。
      */
     @Bean
@@ -111,7 +120,7 @@ public class RuntimeConfiguration {
      * 创建控制面访问活动运行时的唯一入口。
      */
     @Bean
-    public RuntimeHost runtimeHost(SessionRegistry sessions, RunCoordinator runs) {
+    public RuntimeHost runtimeHost(SessionService sessions, RunCoordinator runs) {
         return new RuntimeHost(sessions, runs);
     }
 

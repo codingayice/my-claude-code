@@ -1,8 +1,8 @@
 package cn.ayice.veyra.control.api;
 
-import cn.ayice.veyra.host.event.AgentEvent;
-import cn.ayice.veyra.host.log.AgentLogBus;
-import cn.ayice.veyra.host.log.AgentLogLine;
+import cn.ayice.veyra.session.event.AgentEvent;
+import cn.ayice.veyra.session.log.AgentLogBus;
+import cn.ayice.veyra.session.log.AgentLogLine;
 import cn.ayice.veyra.control.sse.StreamingAgentEventSubscriber;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;

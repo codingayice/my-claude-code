@@ -1,8 +1,8 @@
 package cn.ayice.veyra.boot;
 
 import cn.ayice.veyra.config.AppConfig;
-import cn.ayice.veyra.conversation.transcript.SessionPathResolver;
-import cn.ayice.veyra.conversation.transcript.TranscriptStore;
+import cn.ayice.veyra.session.persistence.SessionPathResolver;
+import cn.ayice.veyra.session.persistence.TranscriptStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

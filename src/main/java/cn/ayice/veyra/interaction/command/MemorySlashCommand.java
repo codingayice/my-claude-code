@@ -1,14 +1,14 @@
 package cn.ayice.veyra.interaction.command;
 
-import cn.ayice.veyra.conversation.memory.ForgetMemoryCommand;
-import cn.ayice.veyra.conversation.memory.MemoryEntry;
-import cn.ayice.veyra.conversation.memory.MemoryErrorCode;
-import cn.ayice.veyra.conversation.memory.MemoryException;
-import cn.ayice.veyra.conversation.memory.MemoryExtractionStatus;
-import cn.ayice.veyra.conversation.memory.MemoryIndexEntry;
-import cn.ayice.veyra.conversation.memory.MemoryOperationResult;
-import cn.ayice.veyra.conversation.memory.MemoryScope;
-import cn.ayice.veyra.conversation.memory.MemoryService;
+import cn.ayice.veyra.memory.ForgetMemoryCommand;
+import cn.ayice.veyra.memory.MemoryEntry;
+import cn.ayice.veyra.memory.MemoryErrorCode;
+import cn.ayice.veyra.memory.MemoryException;
+import cn.ayice.veyra.memory.MemoryExtractionStatus;
+import cn.ayice.veyra.memory.MemoryIndexEntry;
+import cn.ayice.veyra.memory.MemoryOperationResult;
+import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryService;
 
 import java.util.List;
 import java.util.Locale;

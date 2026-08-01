@@ -1,12 +1,12 @@
 package cn.ayice.veyra.interaction.command;
 
-import cn.ayice.veyra.conversation.memory.MemoryActivation;
-import cn.ayice.veyra.conversation.memory.MemoryFileStore;
-import cn.ayice.veyra.conversation.memory.MemoryPaths;
-import cn.ayice.veyra.conversation.memory.MemoryScope;
-import cn.ayice.veyra.conversation.memory.MemoryService;
-import cn.ayice.veyra.conversation.memory.MemoryType;
-import cn.ayice.veyra.conversation.memory.RememberMemoryCommand;
+import cn.ayice.veyra.memory.MemoryActivation;
+import cn.ayice.veyra.memory.MemoryFileStore;
+import cn.ayice.veyra.memory.MemoryPaths;
+import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryService;
+import cn.ayice.veyra.memory.MemoryType;
+import cn.ayice.veyra.memory.RememberMemoryCommand;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

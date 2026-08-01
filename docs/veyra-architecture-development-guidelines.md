@@ -18,42 +18,51 @@
 ```mermaid
 graph TD
   Server["server: Spring Boot entry"] --> Boot["boot: composition root"]
-  Control["control: MVC / DTO / SSE / HTTP errors"] --> Host["host: active session ownership"]
-  Host --> Kernel["kernel: Agent / Chat / Subagent execution"]
-  Host --> Conversation["conversation: context / memory / transcript"]
-  Host --> Tooling["tooling: tools / permission / task state"]
-  Host --> Interaction["interaction: slash commands"]
-  Kernel --> Conversation
-  Kernel --> Tooling
-  Kernel --> LLM["llm: LangChain4j model integration"]
-  Conversation --> LLM
-  Interaction --> Conversation
-  LLM --> Config["config: immutable runtime configuration"]
+  Control["control: MVC / DTO / SSE / HTTP errors"] --> Runtime["runtime: Run / Agent / Chat orchestration"]
+  Runtime --> Session["session: active state / JSONL / recovery"]
+  Runtime --> Context["context: model request assembly"]
+  Runtime --> Compaction["compaction: context compression"]
+  Runtime --> Memory["memory: long-term memory"]
+  Runtime --> Tool["tool: catalog / permission / execution"]
+  Runtime --> Subagent["subagent: isolated agent tasks"]
+  Runtime --> Interaction["interaction: slash commands"]
+  Runtime --> LLM["llm: LangChain4j model integration"]
+  Compaction --> Context
+  Compaction --> LLM
+  Memory --> LLM
+  Subagent --> Context
+  Subagent --> Compaction
+  Subagent --> Tool
+  Subagent --> LLM
   Boot --> Control
-  Boot --> Host
-  Boot --> Kernel
-  Boot --> Conversation
-  Boot --> Tooling
+  Boot --> Runtime
+  Boot --> Session
+  Boot --> Context
+  Boot --> Compaction
+  Boot --> Memory
+  Boot --> Tool
+  Boot --> Subagent
   Boot --> LLM
 ```
 
-依赖只能沿箭头方向。`boot` 是唯一完整对象图装配点。`control` 只能通过 `RuntimeHost` 进入运行时；`tooling` 和 `conversation` 不得反向依赖 `kernel`、`host` 或 `control`。
+依赖只能沿箭头方向。`boot` 是唯一完整对象图装配点。`control` 只能通过 `RuntimeHost` 进入运行时；Harness 能力模块不得依赖 `control`、`boot`、`server` 或 Spring MVC。
 
 包内职责：
 
 | 包 | 负责 | 禁止 |
 | --- | --- | --- |
 | `control` | Controller、请求/响应 DTO、校验、SSE 序列化、HTTP 异常 | Agent 循环、工具执行、持久化、第三方调用 |
-| `host` | SessionRegistry、SessionRuntime、同会话串行队列、审批和事件流所有权 | Spring MVC、DTO、模型决策 |
-| `kernel.agent` | 主 Agent turn 状态、请求准备、工具协调、终止状态 | HTTP、Spring、session map |
-| `kernel.chat` | 无工具 Chat 策略 | 复用主 Agent 的工具分支 |
-| `kernel.subagent` | profile 限定的子 Agent 顺序循环 | 主 Agent 的并行工具策略 |
-| `kernel.memory` | Memory 工具、后台提取 single-flight、提取游标和受限子 Agent 编排 | 直接写 topic/索引、会话摘要、HTTP |
-| `conversation.context` | prompt、token、压缩、会话摘要恢复、项目指令 | ToolRegistry、PermissionContext、HTTP |
-| `conversation.memory` | 跨会话长期记忆的模型、路径、文件存储、召回和动态上下文 | 会话摘要、transcript、启动 Agent、管理线程、依赖 Kernel/Tooling |
-| `conversation.transcript` | JSONL 写入、读取和恢复 | 活跃 Session 状态 |
-| `tooling` | 工具目录、授权、执行、任务状态、内置工具 | Kernel、Conversation、Host、Spring |
-| `llm` | 具体 LangChain4j 调用 | Control、Host、Tooling |
+| `runtime` | RuntimeHost、RunCoordinator、主 Agent 和 Chat 执行编排 | HTTP、Spring、JSONL 编解码、具体工具构造 |
+| `session` | SessionService、SessionRegistry、SessionRuntime、同会话串行队列、事件流、JSONL 和恢复 | Spring MVC、DTO、模型决策 |
+| `runtime.agent` | 主 Agent turn 状态、请求准备、工具协调、终止状态 | HTTP、Spring、session map |
+| `runtime.chat` | 无工具 Chat 策略 | 复用主 Agent 的工具分支 |
+| `subagent` | profile 限定的子 Agent 顺序循环 | 主 Agent 的并行工具策略 |
+| `context` | prompt、token、项目指令和最终模型请求组装 | ToolRegistry、PermissionContext、HTTP、压缩决策 |
+| `compaction` | Micro/Session/LLM 压缩、检查点、恢复提示和预算验证 | HTTP、长期记忆存储、具体工具状态实现 |
+| `memory` | 跨会话长期记忆、召回、自动提取、动态上下文和 MemoryTool | 会话摘要、transcript、HTTP |
+| `session.persistence` | JSONL 写入、读取和历史恢复 | 活跃 Session 执行状态、HTTP |
+| `tool` | 工具目录、授权、执行、权限、后台工具和内置工具 | Runtime、Memory 和 Subagent 的具体类型、Spring |
+| `llm` | 具体 LangChain4j 调用 | Control、Session、Tool |
 | `boot` | Spring Bean、Executor 生命周期、完整 SessionRuntime 构造 | 业务决策 |
 
 禁止新增顶层 `common`、`shared`、`util`、`manager` 包。跨包数据应使用窄 record；跨包行为只在真实回调或测试 seam 出现时使用接口。
@@ -62,13 +71,13 @@ graph TD
 
 ```text
 Tauri -> Controller -> Control Service -> RuntimeHost
-      -> SessionRuntime serial queue -> RunCoordinator
+      -> SessionService / SessionRuntime serial queue -> RunCoordinator
       -> AgentLoop | ChatLoop
-      -> Conversation / LLM / Tooling
+      -> Context / Compaction / Memory / Tool / LLM
       -> SessionEventStream -> SSE Controller -> Tauri
 ```
 
-Controller 只做四件事：接收、校验、调用一个 Control Service、返回 DTO。Control Service 不得直接获取 AgentLoop、ToolEngine、PermissionContextStore 或 TranscriptStore。
+Controller 只做四件事：接收、校验、调用 `AgentApplicationService`、返回 DTO。Control Service 不得直接获取 AgentLoop、ToolService、PermissionContextStore 或 TranscriptStore。
 
 ## 4. 状态与并发
 
@@ -96,7 +105,7 @@ Controller 只做四件事：接收、校验、调用一个 Control Service、�
 
 1. Request failure：`AgentApiException` 或参数异常，由 `AgentExceptionHandler` 转为 `Axxxx/Bxxxx`。
 2. Run failure：`RunCoordinator` 捕获，记录完整堆栈，并发出兼容的 `run.failed`。
-3. Tool failure：`ToolEngine/ToolDispatcher` 记录 `toolUseId`、工具名和 cause，返回现有 ToolResult 内容。
+3. Tool failure：`ToolService/ToolDispatcher` 记录 `toolUseId`、工具名和 cause，返回现有 ToolResult 内容。
 
 规则：
 
@@ -108,7 +117,7 @@ Controller 只做四件事：接收、校验、调用一个 Control Service、�
 - HTTP 使用 `requestId`；异步 Run 使用 `sessionId/runId`；子 Agent 和工具额外记录 `agentId/toolUseId`。
 - 同一失败边界只记录一次 ERROR，内层仅在补充关键上下文时记录。
 
-## 7. Tooling 规则
+## 7. Tool 规则
 
 工具生命周期固定为：
 
@@ -120,11 +129,12 @@ lookup -> parse -> validate -> permission -> approval -> execute -> normalize
 - 权限判断必须返回 `PermissionDecision`，不能在工具内部绕过审批。
 - 新工具继承 `BaseTool`，明确 category、visibility、riskLevel、schema、validation 和 permission。
 - 工具不得直接依赖 Controller、SessionRuntime 或 SubagentRuntime。
-- 启动子 Agent 通过 `SubagentExecution` 回调；这是行为 seam，不是技术 Adapter。
+- `MemoryTool` 和 `AgentTool` 由所属能力模块实现，只能在 Boot 中注册进 ToolCatalog。
+- 主 Agent 和 Subagent 通过 Boot 装配的 ToolCatalog 构造工具集合，业务运行时不得直接创建内置工具。
 
-## 8. Conversation 与 Kernel 规则
+## 8. Context、Compaction 与 Runtime 规则
 
-- Conversation 只接收构建模型上下文所需的不可变值，例如工具 schema、描述和 workingDir；不得持有 ToolRegistry 或 PermissionContext。
+- Context 只接收构建模型上下文所需的不可变值，例如工具 schema、描述和 workingDir；不得持有 ToolRegistry 或 PermissionContext。
 - prompt 文本、压缩阈值、boundary 判定和恢复预算的修改属于业务变更，必须单独评审，不与架构迁移混合。
 - Agent、Chat、Subagent 是三种明确策略，不通过大量 mode if/else 合并成一个循环。
 - 共用代码只抽取稳定阶段：模型等待、turn preparation、工具协调和 lifecycle hook。
@@ -133,10 +143,10 @@ lookup -> parse -> validate -> permission -> approval -> execute -> normalize
 
 记忆相关代码必须遵守以下边界：
 
-- `conversation.memory` 只负责跨会话长期记忆，topic 是事实来源，`MEMORY.md` 是可重建索引。
-- `conversation.context.compaction` 只负责当前会话的上下文压缩摘要和恢复标记，不得读取长期记忆 topic。
-- `conversation.transcript` 只负责会话记录与现有恢复能力，不得作为长期用户偏好来源。
-- `kernel.memory` 负责模型工具和自动提取编排；所有写入必须经过 `MemoryService`，禁止直接使用通用文件工具修改记忆目录。
+- `memory` 只负责跨会话长期记忆，topic 是事实来源，`MEMORY.md` 是可重建索引。
+- `compaction` 只负责当前会话的上下文压缩摘要和恢复标记，不得读取长期记忆 topic。
+- `session.persistence` 只负责会话记录与现有恢复能力，不得作为长期用户偏好来源。
+- `memory.extraction` 负责自动提取编排；所有写入必须经过 `MemoryService`，禁止直接使用通用文件工具修改记忆目录。
 - 长期记忆正文只能作为当前请求的低优先级参考消息注入，不得写入稳定系统提示词或 transcript。
 - 用户级与项目级命名空间必须隔离；不得读取或迁移旧长期记忆目录。
 
@@ -162,22 +172,25 @@ D:\apache-maven-3.9.9\bin\mvn.cmd `
 测试要求：
 
 - Controller：校验、状态码、统一错误码、SSE/二进制例外。
-- Host：恢复、同 Session 串行、跨 Session 并行、close/cancel。
-- Kernel：模型失败重试、超时、压缩恢复、工具顺序、终止条件。
-- Tooling：校验、拒绝、ASK、session allow、执行异常、空结果。
-- Conversation：prompt section、token 边界、压缩、memory、JSONL 兼容。
+- Session：恢复、同 Session 串行、跨 Session 并行、close/cancel、JSONL。
+- Runtime：模型失败重试、超时、工具顺序、终止条件。
+- Tool：校验、拒绝、ASK、session allow、执行异常、空结果。
+- Context/Compaction/Memory：prompt section、token 边界、压缩和长期记忆。
 - 不依赖真实第三方网络；用 fake AIService 或 callback seam。
 - `VeyraArchitectureTest` 必须通过，禁止通过放宽规则解决违规。
 
 ## 10. 新代码落点决策
 
 1. 是 HTTP 协议或 DTO：放 `control`。
-2. 是活跃 Session 所有权或调度：放 `host`。
-3. 决定一次 Agent/Chat/Subagent 如何执行：放 `kernel` 对应策略包。
-4. 决定模型看到什么或会话数据如何保存：放 `conversation`。
-5. 决定工具是否可见、可执行、需审批或如何运行：放 `tooling`。
-6. 是 LangChain4j 具体调用：放 `llm`。
-7. 只是对象构造或 Executor/Spring 生命周期：放 `boot`。
+2. 是活跃 Session、JSONL 或恢复：放 `session`。
+3. 决定一次 Run、Agent 或 Chat 如何编排：放 `runtime` 对应策略包。
+4. 决定模型请求包含什么：放 `context`。
+5. 决定何时以及如何压缩上下文：放 `compaction`。
+6. 是跨会话长期记忆：放 `memory`。
+7. 决定工具是否可见、可执行、需审批或如何运行：放 `tool`。
+8. 是子 Agent 执行或任务生命周期：放 `subagent`。
+9. 是 LangChain4j 具体调用：放 `llm`。
+10. 只是对象构造或 Executor/Spring 生命周期：放 `boot`。
 
 如果一个类同时符合两项，先拆分协议/所有权/执行职责，不要创建新的通用层掩盖混合职责。
 

@@ -1,5 +1,6 @@
 package cn.ayice.veyra.control.api;
 
+import cn.ayice.veyra.control.AgentApplicationService;
 import cn.ayice.veyra.control.dto.approval.ApprovalDecisionRequest;
 import cn.ayice.veyra.control.dto.approval.ApprovalListResponse;
 import cn.ayice.veyra.control.dto.command.ExecuteSlashCommandRequest;
@@ -13,10 +14,6 @@ import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
 import cn.ayice.veyra.control.dto.session.UpdateSessionSettingsRequest;
 import cn.ayice.veyra.control.exception.AgentApiException;
-import cn.ayice.veyra.control.service.ApprovalApplicationService;
-import cn.ayice.veyra.control.service.RunApplicationService;
-import cn.ayice.veyra.control.service.SessionApplicationService;
-import cn.ayice.veyra.control.service.SlashCommandApplicationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,24 +34,13 @@ import java.util.Map;
 @RequestMapping("/v1")
 public class AgentController {
 
-    private final SessionApplicationService sessions;
-    private final RunApplicationService runs;
-    private final SlashCommandApplicationService commands;
-    private final ApprovalApplicationService approvals;
+    private final AgentApplicationService application;
 
     /**
      * 注入应用服务并创建 AgentController。
      */
-    public AgentController(
-            SessionApplicationService sessions,
-            RunApplicationService runs,
-            SlashCommandApplicationService commands,
-            ApprovalApplicationService approvals
-    ) {
-        this.sessions = sessions;
-        this.runs = runs;
-        this.commands = commands;
-        this.approvals = approvals;
+    public AgentController(AgentApplicationService application) {
+        this.application = application;
     }
 
     /**
@@ -71,7 +57,7 @@ public class AgentController {
      */
     @PostMapping("/sessions")
     public ApiResponse<SessionResponse> createSession() {
-        return ApiResponse.success(sessions.createSession());
+        return ApiResponse.success(application.createSession());
     }
 
     /**
@@ -79,7 +65,7 @@ public class AgentController {
      */
     @GetMapping("/sessions")
     public ApiResponse<SessionListResponse> listSessions() {
-        return ApiResponse.success(sessions.listSessions());
+        return ApiResponse.success(application.listSessions());
     }
 
     /**
@@ -87,7 +73,7 @@ public class AgentController {
      */
     @GetMapping("/sessions/{sessionId}")
     public ApiResponse<SessionResponse> session(@PathVariable("sessionId") String sessionId) {
-        return ApiResponse.success(sessions.session(sessionId));
+        return ApiResponse.success(application.session(sessionId));
     }
 
     /**
@@ -98,7 +84,7 @@ public class AgentController {
             @PathVariable("sessionId") String sessionId,
             @RequestBody UpdateSessionSettingsRequest request
     ) {
-        return ApiResponse.success(sessions.updateSettings(sessionId, request));
+        return ApiResponse.success(application.updateSettings(sessionId, request));
     }
 
     /**
@@ -106,7 +92,7 @@ public class AgentController {
      */
     @GetMapping("/sessions/{sessionId}/transcript")
     public ApiResponse<TranscriptResponse> transcript(@PathVariable("sessionId") String sessionId) {
-        return ApiResponse.success(sessions.transcript(sessionId));
+        return ApiResponse.success(application.transcript(sessionId));
     }
 
     /**
@@ -118,7 +104,7 @@ public class AgentController {
             @RequestBody CreateRunRequest request
     ) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(ApiResponse.success(runs.createRun(sessionId, request.input(), request.mode())));
+                .body(ApiResponse.success(application.createRun(sessionId, request.input(), request.mode())));
     }
 
     /**
@@ -129,7 +115,7 @@ public class AgentController {
             @PathVariable("sessionId") String sessionId,
             @RequestParam(name = "query", defaultValue = "") String query
     ) {
-        return ApiResponse.success(commands.options(sessionId, query));
+        return ApiResponse.success(application.commandOptions(sessionId, query));
     }
 
     /**
@@ -140,7 +126,7 @@ public class AgentController {
             @PathVariable("sessionId") String sessionId,
             @RequestBody ExecuteSlashCommandRequest request
     ) {
-        return ApiResponse.success(commands.execute(sessionId, request.command()));
+        return ApiResponse.success(application.executeCommand(sessionId, request.command()));
     }
 
     /**
@@ -148,7 +134,7 @@ public class AgentController {
      */
     @GetMapping("/sessions/{sessionId}/approvals")
     public ApiResponse<ApprovalListResponse> pendingApprovals(@PathVariable("sessionId") String sessionId) {
-        return ApiResponse.success(approvals.pendingApprovals(sessionId));
+        return ApiResponse.success(application.pendingApprovals(sessionId));
     }
 
     /**
@@ -160,7 +146,7 @@ public class AgentController {
             @PathVariable("approvalId") String approvalId,
             @RequestBody ApprovalDecisionRequest request
     ) {
-        if (!approvals.decide(sessionId, approvalId, request.decision())) {
+        if (!application.decideApproval(sessionId, approvalId, request.decision())) {
             throw new AgentApiException(HttpStatus.NOT_FOUND, "approval not found");
         }
         return ApiResponse.success(Map.of("ok", true));
