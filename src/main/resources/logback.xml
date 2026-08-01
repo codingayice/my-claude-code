@@ -1,0 +1,17 @@
+<configuration>
+    <!-- Send all logs to stderr so stdout only contains the AI response stream -->
+    <appender name="FRONTEND" class="cn.ayice.veyra.host.log.Slf4jLogAppender">
+        <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [requestId=%X{requestId:-} sessionId=%X{sessionId:-} runId=%X{runId:-}] - %msg%n</pattern>
+    </appender>
+
+    <!-- Quiet down LangChain4j and HTTP client noise -->
+    <logger name="dev.langchain4j" level="WARN" />
+    <logger name="dev.ai4j" level="WARN" />
+    <logger name="com.squareup.okhttp" level="WARN" />
+    <logger name="okhttp3" level="WARN" />
+    <logger name="org.apache" level="WARN" />
+
+    <root level="INFO">
+        <appender-ref ref="FRONTEND" />
+    </root>
+</configuration>

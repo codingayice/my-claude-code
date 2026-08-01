@@ -1,0 +1,179 @@
+package cn.ayice.veyra.kernel.agent;
+
+import cn.ayice.veyra.conversation.transcript.TranscriptRecorder;
+import cn.ayice.veyra.kernel.memory.MemoryExtractionCoordinator;
+import cn.ayice.veyra.tooling.ToolAuthorization;
+import cn.ayice.veyra.tooling.ToolEngine;
+import cn.ayice.veyra.tooling.ToolExecution;
+import cn.ayice.veyra.tooling.ToolExecutionConfirmation;
+import cn.ayice.veyra.tooling.ToolExecutionObserver;
+import cn.ayice.veyra.tooling.ToolExecutionPolicy;
+import cn.ayice.veyra.tooling.ToolResult;
+import cn.ayice.veyra.tooling.permission.PermissionContext;
+import cn.ayice.veyra.tooling.permission.PermissionContextStore;
+import cn.ayice.veyra.tooling.permission.PermissionDecision;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+
+/**
+ * 主 Agent 单轮工具调用协调器。
+ * <p>它先完成整批授权，再并行执行允许的工具，最后按模型请求顺序收集结果并形成下一轮上下文。</p>
+ */
+final class AgentToolCoordinator {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentToolCoordinator.class);
+    private static final ToolExecutionPolicy MAIN_TOOL_POLICY = ToolExecutionPolicy.mainAgent();
+
+    private final ToolEngine toolEngine;
+    private final PermissionContextStore permissionContextStore;
+    private final AgentLoopEvents events;
+    private final TranscriptRecorder transcriptRecorder;
+    private final MemoryExtractionCoordinator memoryExtractionCoordinator;
+    private final Executor toolExecutor;
+
+    /**
+     * 使用统一工具引擎、会话权限状态和事件输出组件创建协调器。
+     */
+    AgentToolCoordinator(
+            ToolEngine toolEngine,
+            PermissionContextStore permissionContextStore,
+            AgentLoopEvents events,
+            TranscriptRecorder transcriptRecorder,
+            MemoryExtractionCoordinator memoryExtractionCoordinator,
+            Executor toolExecutor
+    ) {
+        this.toolEngine = toolEngine;
+        this.permissionContextStore = permissionContextStore;
+        this.events = events;
+        this.transcriptRecorder = transcriptRecorder;
+        this.memoryExtractionCoordinator = memoryExtractionCoordinator;
+        this.toolExecutor = toolExecutor;
+    }
+
+    /**
+     * 处理当前模型响应中的全部工具请求，并在所有工具结束后返回更新后的消息上下文。
+     */
+    Result execute(List<ChatMessage> initialMessages, List<ToolExecutionRequest> requests) {
+        List<ChatMessage> messages = initialMessages;
+        PermissionContext permissionContext = permissionContextStore.current();
+        List<ToolAuthorization> approvedCalls = new ArrayList<>();
+
+        // 授权阶段保持模型请求顺序；拒绝结果也必须写回上下文，避免模型等待不存在的 tool result。
+        for (ToolExecutionRequest request : requests) {
+            permissionContext = permissionContextStore.current();
+            ToolAuthorization authorization = toolEngine.authorize(
+                    request,
+                    permissionContext,
+                    MAIN_TOOL_POLICY,
+                    new ToolExecutionObserver() {
+                        /**
+                         * {@inheritDoc}
+                         */
+                        @Override
+                        public void authorizationDecided(
+                                ToolExecutionRequest toolRequest,
+                                PermissionDecision decision
+                        ) {
+                            log.info("   [工具]{}:{}", toolRequest.name(), decision.kind());
+                            events.toolStarted(toolRequest);
+                        }
+                    }
+            );
+            permissionContext = authorization.context();
+
+            if (!authorization.allowed()) {
+                if (authorization.choice() == ToolExecutionConfirmation.Choice.DENY) {
+                    log.info("   [工具]用户拒绝了工具调用");
+                }
+                events.toolRejected(request, authorization.rejectionReason());
+                ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
+                        request,
+                        "<rejected>" + authorization.rejectionReason() + "</rejected>"
+                );
+                messages = append(messages, resultMessage);
+                transcriptRecorder.record(resultMessage);
+                continue;
+            }
+
+            if (authorization.decision().kind() == PermissionDecision.Kind.ASK) {
+                if (authorization.choice() == ToolExecutionConfirmation.Choice.ALLOW_FOR_SESSION) {
+                    log.info("   [工具]用户允许会话内该工具调用");
+                }
+                log.info("   [工具]用户允许了本次工具调用");
+            }
+            approvedCalls.add(authorization);
+        }
+
+        boolean todoWriteUsed = false;
+        boolean memoryWritten = false;
+        if (!approvedCalls.isEmpty()) {
+            PermissionContext executionContext = permissionContext;
+            List<CompletableFuture<ToolExecution>> futures = new ArrayList<>();
+            // 同一轮中互不依赖的工具并行启动，以最长工具耗时作为整批耗时上界。
+            for (ToolAuthorization authorization : approvedCalls) {
+                futures.add(CompletableFuture.supplyAsync(
+                        () -> toolEngine.execute(authorization, executionContext, MAIN_TOOL_POLICY),
+                        toolExecutor
+                ));
+            }
+
+            // Future#get 构成轮次屏障：全部结果按请求顺序写回后，AgentLoop 才能进入下一轮模型调用。
+            for (int index = 0; index < futures.size(); index++) {
+                ToolExecutionRequest request = approvedCalls.get(index).request();
+                try {
+                    ToolExecution execution = futures.get(index).get();
+                    ToolResult result = execution.result();
+                    String content = execution.content();
+                    events.toolCompleted(request, result, content);
+                    todoWriteUsed |= "TodoWrite".equals(request.name());
+                    memoryWritten |= result.success()
+                            && memoryExtractionCoordinator != null
+                            && memoryExtractionCoordinator.isMemoryWriteRequest(request);
+                    ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(request, content);
+                    messages = append(messages, resultMessage);
+                    transcriptRecorder.record(resultMessage);
+                } catch (Exception error) {
+                    // 单个工具失败被规范化为 tool result，不中断同一批其他工具的结果收集。
+                    log.error("工具执行失败, toolUseId={}, name={}", request.id(), request.name(), error);
+                    events.toolFailed(request, error);
+                    ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
+                            request,
+                            "<error>工具执行失败: " + error.getMessage() + "</error>"
+                    );
+                    messages = append(messages, resultMessage);
+                    transcriptRecorder.record(resultMessage);
+                }
+            }
+        }
+
+        return new Result(messages, permissionContext, todoWriteUsed, memoryWritten);
+    }
+
+    /**
+     * 复制消息列表并追加一条工具结果，避免原地修改调用方持有的上下文。
+     */
+    private static List<ChatMessage> append(List<ChatMessage> messages, ChatMessage message) {
+        List<ChatMessage> next = new ArrayList<>(messages);
+        next.add(message);
+        return next;
+    }
+
+    /**
+     * Result 表示操作执行结果。
+     */
+    record Result(
+            List<ChatMessage> messages,
+            PermissionContext permissionContext,
+            boolean todoWriteUsed,
+            boolean memoryWritten
+    ) {
+    }
+}

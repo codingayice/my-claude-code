@@ -1,0 +1,37 @@
+app:
+  name: Veyra
+  description: 一个运行在本地工作区、可协调工具与子 Agent 完成任务的智能桌面助手
+
+model:
+  name: deepseek-v4-flash
+  baseUrl: https://api.deepseek.com/v1
+  apiKey: ${DEEPSEEK_API_KEY}
+  temperature: 0.7
+  maxTokens: 8192
+  timeoutSeconds: 120
+
+context:
+  maxRounds: 0
+  maxContextTokens: 128000
+  autoCompactEnabled: true
+  microCompactEnabled: true
+  autoCompactWindowOverride:
+  postCompactRestoreEnabled: true
+  contextDangerRatio: 0.9
+
+memory:
+  dir: ~/.mycc
+  longTermDir: ~/.veyra/memory
+  autoExtractionEnabled: true
+  maxTopicBytes: 16384
+  maxIndexLines: 200
+  maxIndexBytes: 25600
+  maxScannedTopics: 200
+  maxAlwaysContextBytes: 4096
+  maxRecallItems: 5
+  maxRecalledTopicBytes: 4096
+  maxTurnContextBytes: 20480
+  extractionMaxRounds: 5
+
+permission:
+  mode: ask_every_time
