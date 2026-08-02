@@ -102,6 +102,13 @@ public final class LoopState {
     }
 
     /**
+     * 返回最近一次完整工具批次或最终回复后的稳定原始序号。
+     */
+    public long stableSequence() {
+        return currentStableSequence;
+    }
+
+    /**
      * 返回最近一次完整模型请求的容量状态。
      */
     public CompactionService.CapacityState capacityState() {

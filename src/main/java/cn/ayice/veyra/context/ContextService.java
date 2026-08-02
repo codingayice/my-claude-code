@@ -48,6 +48,15 @@ public class ContextService {
     }
 
     /**
+     * 在上下文压缩准备开始前预取本轮长期记忆，允许 Side Query 与压缩准备并行。
+     */
+    public void prefetchMemory(String userInput) {
+        if (memoryService != null) {
+            memoryService.prefetchContext(userInput);
+        }
+    }
+
+    /**
      * 使用带原始序号的工作历史构造请求；合成摘要和恢复消息不会被误认为本轮真实用户输入。
      */
     public ChatRequest buildWorking(List<WorkingMessage> history, Path workingDir) {

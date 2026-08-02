@@ -49,6 +49,7 @@ public class AgentLoop {
     private static final Logger logger = LoggerFactory.getLogger(AgentLoop.class);
 
     private final CompactionService turnPreparer;
+    private final ContextService contextBuilder;
     private final AIService ai;
     private final AgentToolCoordinator toolCoordinator;
     private final PermissionContextStore permissionContextStore;
@@ -95,6 +96,7 @@ public class AgentLoop {
             throw new IllegalArgumentException("modelCallTimeoutMs must be positive");
         }
         this.compactConfig = compactConfig;
+        this.contextBuilder = contextBuilder;
         this.checkpointState = checkpointState;
         this.sessionSummaryCoordinator = sessionSummaryCoordinator;
         this.turnPreparer = new CompactionService(
@@ -166,6 +168,7 @@ public class AgentLoop {
         LoopState state = LoopState.initial(history, nextSequence, nextSequence)
                 .appendOriginal(UserMessage.from(input))
                 .markStable();
+        contextBuilder.prefetchMemory(input);
         transcriptRecorder.record(UserMessage.from(input));
         boolean promptTooLongCompactionAttempted = false;
         boolean mainAgentWroteMemory = false;
@@ -303,7 +306,7 @@ public class AgentLoop {
             if (!aiMessage.hasToolExecutionRequests()) {
                 state = state.markStable();
                 submitStableSnapshot(state);
-                fireLongTermMemoryExtraction(state.chatMessages(), mainAgentWroteMemory);
+                fireLongTermMemoryExtraction(state, mainAgentWroteMemory);
                 state = state.withAiMessage(aiMessage)
                         .withRequest(request)
                         .withFailureCount(0)
@@ -528,11 +531,11 @@ public class AgentLoop {
     }
 
     /**
-     * 最终回复后提交长期记忆提取；本轮显式写过记忆时由协调器跳过重复提取。
+     * 只把稳定点快照提交给长期记忆提取；显式写入与后台提取共享同一语义去重规则。
      */
-    private void fireLongTermMemoryExtraction(List<ChatMessage> messages, boolean skip) {
+    private void fireLongTermMemoryExtraction(LoopState state, boolean mainAgentWroteMemory) {
         if (memoryExtractionCoordinator != null) {
-            memoryExtractionCoordinator.submit(messages, skip);
+            memoryExtractionCoordinator.submitStable(state.stableSequence(), state.messages(), mainAgentWroteMemory);
         }
     }
 }

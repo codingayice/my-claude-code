@@ -97,6 +97,8 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
         );
         this.memoryService = new MemoryService(
                 store,
+                ai,
+                ioExecutor,
                 config.getMemoryMaxAlwaysContextBytes(),
                 config.getMemoryMaxRecallItems(),
                 config.getMemoryMaxRecalledTopicBytes(),
@@ -172,7 +174,8 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                         memoryService,
                         agentRuntime,
                         ioExecutor,
-                        config.getMemoryExtractionMaxRounds()
+                        config.getMemoryExtractionMaxRounds(),
+                        initialHistory == null ? 0L : initialHistory.size()
                 )
                 : null;
         // AgentLoop 与 ChatLoop 共享模型和 transcript，但保持不同的执行策略和历史副本。

@@ -1,6 +1,7 @@
 package cn.ayice.veyra.runtime;
 
 import cn.ayice.veyra.memory.MemoryService;
+import cn.ayice.veyra.context.WorkingMessage;
 import cn.ayice.veyra.subagent.AgentProfile;
 import cn.ayice.veyra.subagent.SubagentRuntime;
 import cn.ayice.veyra.subagent.AgentRunResult;
@@ -17,6 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
@@ -37,7 +39,8 @@ public class MemoryExtractionCoordinator {
     private final Executor executor;
     private final int maxRounds;
 
-    private int cursor;
+    /** 已成功处理到的稳定原始序号；只在 Subagent completed 后推进。 */
+    private long cursor;
     private boolean running;
     private Request pending;
     private Instant lastCompletedAt;
@@ -54,38 +57,73 @@ public class MemoryExtractionCoordinator {
             Executor executor,
             int maxRounds
     ) {
+        this(sessionId, memoryService, runtime, executor, maxRounds, 0L);
+    }
+
+    /**
+     * 创建带历史基线的协调器。恢复或已有会话历史不属于当前待提取区间。
+     */
+    public MemoryExtractionCoordinator(
+            String sessionId,
+            MemoryService memoryService,
+            SubagentRuntime runtime,
+            Executor executor,
+            int maxRounds,
+            long initialStableSequence
+    ) {
         this.sessionId = sessionId == null || sessionId.isBlank() ? "unknown-session" : sessionId;
         this.memoryService = memoryService;
         this.runtime = runtime;
         this.executor = executor;
         this.maxRounds = maxRounds <= 0 ? 5 : Math.min(maxRounds, 5);
+        this.cursor = Math.max(0L, initialStableSequence);
     }
 
     /**
-     * 提交最新消息快照。已有任务运行时只保留最新快照，当前任务结束后执行一次尾随提取。
+     * 提交无序号兼容快照；布尔参数仅保留调用方观察信息，不改变统一提取语义。
      */
     public void submit(List<ChatMessage> messages, boolean mainAgentWroteMemory) {
         if (memoryService == null || runtime == null || executor == null || messages == null || !memoryService.isEnabled()) {
             return;
         }
         synchronized (monitor) {
-            if (mainAgentWroteMemory) {
-                // 主 Agent 已经显式处理当前区间，推进游标避免后台重复写入。
-                cursor = Math.max(cursor, messages.size());
-                pending = null;
-                lastResult = "skipped-explicit-write";
-                lastCompletedAt = Instant.now();
+            List<WorkingMessage> working = new ArrayList<>(messages.size());
+            long sequence = 0;
+            for (ChatMessage message : messages) {
+                working.add(WorkingMessage.original(++sequence, message));
+            }
+            submit(sequence, working);
+        }
+    }
+
+    /**
+     * 提交会话在稳定点的工作历史。只消费上次成功游标之后的原始消息，合成摘要不会被重复提取。
+     */
+    public void submit(long stableSequence, List<WorkingMessage> messages) {
+        if (memoryService == null || runtime == null || executor == null || messages == null || !memoryService.isEnabled()) {
+            return;
+        }
+        synchronized (monitor) {
+            if (stableSequence <= cursor) {
                 return;
             }
-            if (messages.size() <= cursor) {
-                return;
-            }
-            pending = new Request(sessionId, cursor, messages);
+            pending = new Request(sessionId, cursor, stableSequence, messages);
             if (!running) {
                 running = true;
                 executor.execute(this::drain);
             }
         }
+    }
+
+    /**
+     * 提交稳定快照的运行时入口。主实现不区分调用者身份；runtime 为空时仅保留旧测试替身的观察钩子。
+     */
+    public void submitStable(long stableSequence, List<WorkingMessage> messages, boolean explicitWriteObserved) {
+        if (runtime == null) {
+            submit(WorkingMessage.unwrap(messages), explicitWriteObserved);
+            return;
+        }
+        submit(stableSequence, messages);
     }
 
     /**
@@ -96,7 +134,23 @@ public class MemoryExtractionCoordinator {
                 || !memoryService.isEnabled()) {
             return false;
         }
-        return execute(new Request(sessionId, cursor, messages));
+        List<WorkingMessage> working = new ArrayList<>(messages.size());
+        long sequence = 0;
+        for (ChatMessage message : messages) {
+            working.add(WorkingMessage.original(++sequence, message));
+        }
+        return execute(new Request(sessionId, cursor, sequence, working));
+    }
+
+    /**
+     * 同步提取一个稳定点快照，供运行时边界测试和关闭前诊断使用。
+     */
+    public boolean extractNow(long stableSequence, List<WorkingMessage> messages) {
+        if (memoryService == null || runtime == null || messages == null || stableSequence <= cursor
+                || !memoryService.isEnabled()) {
+            return false;
+        }
+        return execute(new Request(sessionId, cursor, stableSequence, messages));
     }
 
     /**
@@ -178,7 +232,14 @@ public class MemoryExtractionCoordinator {
      * 运行受限提取 Subagent；只有 completed 才推进游标，失败保留待处理区间。
      */
     private boolean execute(Request request) {
-        if (request.messages().size() <= request.fromMessageIndex()) {
+        long latestCursor;
+        synchronized (monitor) {
+            latestCursor = cursor;
+        }
+        if (latestCursor > request.fromSequence()) {
+            request = request.withFromSequence(latestCursor);
+        }
+        if (request.stableSequence() <= request.fromSequence()) {
             return true;
         }
         try {
@@ -192,7 +253,7 @@ public class MemoryExtractionCoordinator {
             boolean success = "completed".equals(result.status());
             synchronized (monitor) {
                 if (success) {
-                    cursor = Math.max(cursor, request.messages().size());
+                    cursor = Math.max(cursor, request.stableSequence());
                     lastResult = "success";
                     lastErrorCode = null;
                 } else {
@@ -203,7 +264,7 @@ public class MemoryExtractionCoordinator {
             }
             if (!success) {
                 log.warn("长期记忆提取未完成, sessionId={}, cursor={}, status={}",
-                        sessionId, request.fromMessageIndex(), result.status());
+                        sessionId, request.fromSequence(), result.status());
             }
             return success;
         } catch (Exception error) {
@@ -213,7 +274,7 @@ public class MemoryExtractionCoordinator {
                 lastErrorCode = "MEMORY_EXTRACTION_FAILED";
             }
             log.error("长期记忆提取失败, sessionId={}, cursor={}, code=MEMORY_EXTRACTION_FAILED",
-                    sessionId, request.fromMessageIndex(), error);
+                    sessionId, request.fromSequence(), error);
             return false;
         }
     }
@@ -222,9 +283,14 @@ public class MemoryExtractionCoordinator {
      * 只把游标之后的用户和助手自然语言交给提取器，工具流水不进入长期记忆候选。
      */
     private static String buildPrompt(Request request) {
-        int start = Math.min(request.fromMessageIndex(), request.messages().size());
         List<String> conversation = new ArrayList<>();
-        for (ChatMessage message : request.messages().subList(start, request.messages().size())) {
+        for (WorkingMessage working : request.messages()) {
+            OptionalLong sequence = working.sequence();
+            if (sequence.isEmpty() || sequence.getAsLong() <= request.fromSequence()
+                    || sequence.getAsLong() > request.stableSequence()) {
+                continue;
+            }
+            ChatMessage message = working.message();
             if (message instanceof UserMessage userMessage) {
                 conversation.add("用户: " + limit(safeUserText(userMessage), MAX_MESSAGE_CHARS));
             } else if (message instanceof AiMessage aiMessage && aiMessage.text() != null && !aiMessage.text().isBlank()) {
@@ -236,10 +302,13 @@ public class MemoryExtractionCoordinator {
                 .collect(Collectors.joining("\n"));
         return """
                 检查下面的新对话片段是否包含未来新会话仍有价值的长期信息。
-                先使用 Memory.list/show 检查已有记忆；优先更新已有 topic，避免重复创建。
+                先使用 Memory.list/show 检查已有记忆；对比新旧事实后使用 Memory.consolidate，明确选择 CREATE、UPDATE、NOOP 或 CONFLICT，避免重复创建或覆盖冲突。
                 只保存稳定用户偏好、Agent 行为反馈、无法从代码和 Git 推导的项目背景，以及外部参考入口。
                 不保存 transcript、压缩摘要、当前任务进度、Todo、工具输出、文件或函数清单、Git 历史和敏感信息。
                 自动提取一律使用 RELEVANT；无法判断 USER 或 PROJECT 时不要保存。
+                用户明确说“忘掉/删除/不再记住某条偏好”时才允许调用 forget；“以后不要使用 X”表示负向偏好，应 remember/update，而不是删除。
+                只有用户明确表达的稳定个人偏好才能使用 ALWAYS；模型推断不得使用 ALWAYS。
+                如果新信息与已有记忆无法判定为同一事实或存在冲突，不要覆盖旧 topic，保留现状并结束。
                 没有可保存内容时不要调用 remember，直接结束。
 
                 新对话片段:
@@ -271,9 +340,16 @@ public class MemoryExtractionCoordinator {
     /**
      * 一次不可变的长期记忆提取快照。
      */
-    private record Request(String sessionId, int fromMessageIndex, List<ChatMessage> messages) {
+    private record Request(String sessionId, long fromSequence, long stableSequence, List<WorkingMessage> messages) {
         private Request {
             messages = messages == null ? List.of() : List.copyOf(messages);
+        }
+
+        /**
+         * 用最新成功游标重建尾随快照，避免并发提交重复处理已完成片段。
+         */
+        private Request withFromSequence(long sequence) {
+            return new Request(sessionId, sequence, stableSequence, messages);
         }
     }
 
@@ -281,7 +357,7 @@ public class MemoryExtractionCoordinator {
      * 当前会话后台长期记忆提取的可诊断状态。
      */
     public record Status(
-            int cursor,
+            long cursor,
             boolean running,
             boolean pending,
             Instant lastCompletedAt,

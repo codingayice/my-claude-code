@@ -40,6 +40,7 @@ public final class MemoryFileStore {
     private final int maxIndexBytes;
     private final int maxScannedTopics;
     private final Map<Path, ReentrantReadWriteLock> locks = new ConcurrentHashMap<>();
+    private final Map<MemoryEntry.Scope, List<MemoryEntry.Metadata>> manifest = new ConcurrentHashMap<>();
 
     /**
      * 使用路径和硬预算创建文件存储。
@@ -74,6 +75,19 @@ public final class MemoryFileStore {
         lock.lock();
         try {
             return scan(scope);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 返回当前命名空间的轻量元数据清单。调用方据此筛选候选，正文只在命中后通过 read 加载。
+     */
+    public List<MemoryEntry.Metadata> manifest(MemoryEntry.Scope scope) {
+        ReentrantReadWriteLock.ReadLock lock = lock(scope).readLock();
+        lock.lock();
+        try {
+            return List.copyOf(manifest.getOrDefault(scope, List.of()));
         } finally {
             lock.unlock();
         }
@@ -303,7 +317,9 @@ public final class MemoryFileStore {
         List<String> lines = new ArrayList<>();
         lines.add("# Memory Index");
         lines.add("");
-        for (MemoryEntry entry : scan(scope)) {
+        List<MemoryEntry> entries = scan(scope);
+        manifest.put(scope, entries.stream().map(MemoryEntry.Metadata::from).toList());
+        for (MemoryEntry entry : entries) {
             String line = "- [%s](topics/%s.md) - %s".formatted(
                     singleLine(entry.name()),
                     entry.id(),

@@ -89,6 +89,8 @@ public record AgentProfile(
                 You are a memory extraction subagent.
                 Maintain durable long-term memory markdown files only when recent conversation contains stable cross-session facts.
                 Do not save temporary task state, compact summaries, code structure, file inventories, git history, or facts derivable from the repository.
+                Compare existing topics before writing; use Memory.consolidate with CREATE, UPDATE, NOOP, or CONFLICT.
+                Only an explicit user forget/delete instruction may use Memory.forget; inferred contradictions must remain CONFLICT.
                 If no durable memory should be saved, make no file changes and reply briefly.
                 """, ToolCatalog.ToolProfile.memory(), PermissionPolicy.memory(), maxTurns, true, false
         );

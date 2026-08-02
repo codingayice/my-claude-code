@@ -1,5 +1,6 @@
 package cn.ayice.veyra.memory;
 
+import cn.ayice.veyra.llm.AIService;
 import dev.langchain4j.data.message.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +15,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -36,6 +41,8 @@ public final class MemoryService {
     private final int maxRecallItems;
     private final int maxTopicBytes;
     private final int maxTurnBytes;
+    private final Executor queryExecutor;
+    private final Map<String, CompletableFuture<MemoryService.Context>> prefetchedContexts = new ConcurrentHashMap<>();
 
     /**
      * 使用唯一文件存储创建记忆服务。
@@ -47,18 +54,63 @@ public final class MemoryService {
             int maxTopicBytes,
             int maxTurnBytes
     ) {
+        this(store, null, null, maxAlwaysBytes, maxRecallItems, maxTopicBytes, maxTurnBytes);
+    }
+
+    /**
+     * 使用可选的 Side Query 模型和执行器创建记忆服务。预取会在上下文压缩准备期间异步运行。
+     */
+    public MemoryService(
+            MemoryFileStore store,
+            AIService aiService,
+            Executor queryExecutor,
+            int maxAlwaysBytes,
+            int maxRecallItems,
+            int maxTopicBytes,
+            int maxTurnBytes
+    ) {
         this.store = store;
-        this.recallService = new MemoryRecallService(store);
+        this.recallService = new MemoryRecallService(store, aiService);
         this.maxAlwaysBytes = positive(maxAlwaysBytes, "maxAlwaysBytes");
         this.maxRecallItems = positive(maxRecallItems, "maxRecallItems");
         this.maxTopicBytes = positive(maxTopicBytes, "maxTopicBytes");
         this.maxTurnBytes = positive(maxTurnBytes, "maxTurnBytes");
+        this.queryExecutor = queryExecutor;
+    }
+
+    /**
+     * 提前启动本轮记忆召回。没有执行器时保持同步实现，不改变现有调用方行为。
+     */
+    public void prefetchContext(String userInput) {
+        if (queryExecutor == null || userInput == null || userInput.isBlank() || !isEnabled()
+                || shouldIgnoreMemory(userInput)) {
+            return;
+        }
+        String key = userInput.trim();
+        prefetchedContexts.computeIfAbsent(key,
+                ignored -> CompletableFuture.supplyAsync(() -> buildContextNow(userInput), queryExecutor));
     }
 
     /**
      * 加载 ALWAYS 用户偏好和与当前问题相关的记忆，构造本轮临时参考消息。
      */
     public MemoryService.Context buildContext(String userInput) {
+        String key = userInput == null ? null : userInput.trim();
+        CompletableFuture<MemoryService.Context> prefetched = key == null ? null : prefetchedContexts.remove(key);
+        if (prefetched != null) {
+            try {
+                return prefetched.join();
+            } catch (Exception ignored) {
+                return MemoryService.Context.empty();
+            }
+        }
+        return buildContextNow(userInput);
+    }
+
+    /**
+     * 同步构造记忆消息；公开方法只负责消费预取结果，避免递归触发 Side Query。
+     */
+    private MemoryService.Context buildContextNow(String userInput) {
         if (!isEnabled() || shouldIgnoreMemory(userInput)) {
             return MemoryService.Context.empty();
         }
@@ -103,6 +155,9 @@ public final class MemoryService {
                     ? store.paths().idFromName(command.name())
                     : store.paths().validateId(command.id());
             Optional<MemoryEntry> existing = store.read(command.scope(), id);
+            if (existing.isPresent() && sameDurableValue(existing.get(), command)) {
+                return MemoryService.Operation.noop("记忆内容未变化", existing.get());
+            }
             Instant now = Instant.now();
             entry = new MemoryEntry(
                     id,
@@ -118,7 +173,11 @@ public final class MemoryService {
             );
             store.write(entry);
             log.info("长期记忆写入成功, id={}, scope={}, type={}", id, entry.scope(), entry.type());
-            return MemoryService.Operation.success(existing.isPresent() ? "记忆已更新" : "记忆已保存", entry);
+            return MemoryService.Operation.success(
+                    existing.isPresent() ? "记忆已更新" : "记忆已保存",
+                    entry,
+                    existing.isPresent() ? Outcome.UPDATE : Outcome.CREATE
+            );
         } catch (MemoryException error) {
             log.error("长期记忆写入失败, code={}", error.code(), error);
             if (error.code() == MemoryException.Code.MEMORY_INDEX_REBUILD_FAILED) {
@@ -126,6 +185,69 @@ public final class MemoryService {
             }
             return MemoryService.Operation.failure(error.code(), error.getMessage());
         }
+    }
+
+    /**
+     * 按模型给出的四态裁决执行一次受约束合并；裁决与实际存储状态不一致时返回 CONFLICT 且不写盘。
+     */
+    public MemoryService.Operation consolidate(MemoryService.Remember command, Outcome decision) {
+        MemoryEntry entry = null;
+        try {
+            requireEnabled();
+            validateRemember(command);
+            if (decision == null) {
+                throw new MemoryException(MemoryException.Code.MEMORY_INVALID_REQUEST, "必须指定记忆治理裁决");
+            }
+            String id = command.id() == null || command.id().isBlank()
+                    ? store.paths().idFromName(command.name())
+                    : store.paths().validateId(command.id());
+            Optional<MemoryEntry> existing = store.read(command.scope(), id);
+            if (decision == Outcome.CONFLICT) {
+                return MemoryService.Operation.conflict("新旧记忆存在冲突，保留现有 topic", existing.orElse(null));
+            }
+            if (decision == Outcome.CREATE && existing.isPresent()) {
+                return MemoryService.Operation.conflict("裁决要求 CREATE，但目标 topic 已存在", existing.get());
+            }
+            if (decision == Outcome.UPDATE && existing.isEmpty()) {
+                return MemoryService.Operation.conflict("裁决要求 UPDATE，但目标 topic 不存在", null);
+            }
+            if (decision == Outcome.NOOP) {
+                return existing.isPresent() && sameDurableValue(existing.get(), command)
+                        ? MemoryService.Operation.noop("记忆内容未变化", existing.get())
+                        : MemoryService.Operation.conflict("裁决要求 NOOP，但新旧记忆内容不一致", existing.orElse(null));
+            }
+            entry = persistRemember(command, id, existing);
+            return MemoryService.Operation.success(
+                    decision == Outcome.CREATE ? "记忆已保存" : "记忆已更新", entry, decision);
+        } catch (MemoryException error) {
+            log.error("长期记忆合并失败, code={}", error.code(), error);
+            if (error.code() == MemoryException.Code.MEMORY_INDEX_REBUILD_FAILED) {
+                return MemoryService.Operation.partial(error.code(), error.getMessage(), entry);
+            }
+            return MemoryService.Operation.failure(error.code(), error.getMessage());
+        }
+    }
+
+    /**
+     * 根据已有 topic 的创建时间构造并持久化 remember 内容。
+     */
+    private MemoryEntry persistRemember(MemoryService.Remember command, String id, Optional<MemoryEntry> existing) {
+        Instant now = Instant.now();
+        MemoryEntry entry = new MemoryEntry(
+                id,
+                command.scope(),
+                command.type(),
+                command.activation(),
+                command.name().trim(),
+                command.description().trim(),
+                command.content().trim(),
+                existing.map(MemoryEntry::createdAt).orElse(now),
+                now,
+                blankToNull(command.sourceSessionId())
+        );
+        store.write(entry);
+        log.info("长期记忆写入成功, id={}, scope={}, type={}", id, entry.scope(), entry.type());
+        return entry;
     }
 
     /**
@@ -266,12 +388,28 @@ public final class MemoryService {
     }
 
     /**
+     * 判断候选是否与现有 topic 的持久化语义完全一致；时间和来源会话不参与比较。
+     */
+    private static boolean sameDurableValue(MemoryEntry existing, MemoryService.Remember command) {
+        return existing.scope() == command.scope()
+                && existing.type() == command.type()
+                && existing.activation() == command.activation()
+                && existing.name().equals(command.name().trim())
+                && existing.description().equals(command.description().trim())
+                && existing.content().equals(command.content().trim());
+    }
+
+    /**
      * 在独立预算内加载少量始终适用的用户偏好。
      */
     private int appendAlways(List<ContextItem> items, Set<String> ids) {
         int usedBytes = 0;
-        for (MemoryEntry entry : store.list(MemoryEntry.Scope.USER)) {
-            if (entry.activation() != MemoryEntry.Activation.ALWAYS || usedBytes >= maxAlwaysBytes) {
+        for (MemoryEntry.Metadata metadata : store.manifest(MemoryEntry.Scope.USER)) {
+            if (metadata.activation() != MemoryEntry.Activation.ALWAYS || usedBytes >= maxAlwaysBytes) {
+                continue;
+            }
+            MemoryEntry entry = store.read(metadata.scope(), metadata.id()).orElse(null);
+            if (entry == null) {
                 continue;
             }
             MemoryRecallService.TruncatedText text = MemoryRecallService.truncateUtf8(
@@ -376,28 +514,64 @@ public final class MemoryService {
             boolean partial,
             MemoryException.Code errorCode,
             String message,
-            MemoryEntry entry
+            MemoryEntry entry,
+            Outcome outcome
     ) {
+        public Operation(boolean success, boolean partial, MemoryException.Code errorCode, String message, MemoryEntry entry) {
+            this(success, partial, errorCode, message, entry, null);
+        }
+
         /**
          * 创建成功结果。
          */
         public static Operation success(String message, MemoryEntry entry) {
-            return new Operation(true, false, null, message, entry);
+            return new Operation(true, false, null, message, entry, null);
+        }
+
+        /**
+         * 创建带治理结果的成功操作。
+         */
+        public static Operation success(String message, MemoryEntry entry, Outcome outcome) {
+            return new Operation(true, false, null, message, entry, outcome);
+        }
+
+        /**
+         * 创建幂等 NOOP 结果，不重复写入 topic。
+         */
+        public static Operation noop(String message, MemoryEntry entry) {
+            return new Operation(true, false, null, message, entry, Outcome.NOOP);
+        }
+
+        /**
+         * 创建不改动持久化状态的冲突结果。
+         */
+        public static Operation conflict(String message, MemoryEntry entry) {
+            return new Operation(false, false, null, message, entry, Outcome.CONFLICT);
         }
 
         /**
          * 创建失败结果。
          */
         public static Operation failure(MemoryException.Code code, String message) {
-            return new Operation(false, false, code, message, null);
+            return new Operation(false, false, code, message, null, null);
         }
 
         /**
          * 创建 topic 已落盘但派生索引需修复的部分成功结果。
          */
         public static Operation partial(MemoryException.Code code, String message, MemoryEntry entry) {
-            return new Operation(false, true, code, message, entry);
+            return new Operation(false, true, code, message, entry, entry == null ? null : Outcome.UPDATE);
         }
+    }
+
+    /**
+     * 记忆治理的最小四态结果；DELETE 仍是显式 forget 操作，不混入合并状态。
+     */
+    public enum Outcome {
+        CREATE,
+        UPDATE,
+        NOOP,
+        CONFLICT
     }
 
     /**

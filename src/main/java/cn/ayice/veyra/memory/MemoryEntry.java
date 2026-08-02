@@ -18,6 +18,29 @@ public record MemoryEntry(
         String sourceSessionId
 ) {
     /**
+     * 仅用于候选筛选的 Frontmatter 元数据。正文必须在候选确定后按 id 加载。
+     */
+    public record Metadata(
+            String id,
+            Scope scope,
+            Type type,
+            Activation activation,
+            String name,
+            String description,
+            Instant updatedAt
+    ) {
+        /**
+         * 从完整 topic 提取不含正文的清单字段。
+         */
+        public static Metadata from(MemoryEntry entry) {
+            return new Metadata(
+                    entry.id(), entry.scope(), entry.type(), entry.activation(),
+                    entry.name(), entry.description(), entry.updatedAt()
+            );
+        }
+    }
+
+    /**
      * 长期记忆的可见范围。
      */
     public enum Scope {

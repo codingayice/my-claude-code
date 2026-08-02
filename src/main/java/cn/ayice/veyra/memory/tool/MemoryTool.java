@@ -58,6 +58,9 @@ public final class MemoryTool extends BaseTool {
                 不得保存 transcript、上下文压缩摘要、当前任务进度、Todo、工具输出、文件清单、Git 历史或敏感凭据。
                 稳定个人偏好使用 USER；仅当前项目适用的信息使用 PROJECT。
                 自动提取默认使用 RELEVANT；ALWAYS 只允许 USER/PREFERENCE。
+                “以后不要使用 X”是新的负向偏好，应 remember/update；只有用户明确说忘掉、删除或不再记住时才使用 forget。
+                无法确认新旧记忆是否同一事实时不要覆盖旧记忆，先保留现状。
+                自动提取比较新旧 topic 时使用 consolidate 并明确给出 CREATE、UPDATE、NOOP 或 CONFLICT。
                 只有工具返回 success=true 后，才能向用户声称已经记住或忘记。
                 """.trim();
     }
@@ -102,8 +105,8 @@ public final class MemoryTool extends BaseTool {
         try {
             JsonNode root = OBJECT_MAPPER.readTree(arguments == null ? "{}" : arguments);
             String action = text(root, "action");
-            if (!List.of("remember", "forget", "list", "show").contains(action)) {
-                return ValidationResult.invalid("action 必须是 remember、forget、list 或 show");
+            if (!List.of("remember", "consolidate", "forget", "list", "show").contains(action)) {
+                return ValidationResult.invalid("action 必须是 remember、consolidate、forget、list 或 show");
             }
             parseEnum(MemoryEntry.Scope.class, text(root, "scope"), "scope");
             return ValidationResult.ok();
@@ -123,6 +126,7 @@ public final class MemoryTool extends BaseTool {
             MemoryEntry.Scope scope = parseEnum(MemoryEntry.Scope.class, text(root, "scope"), "scope");
             return switch (action) {
                 case "remember" -> remember(root, scope);
+                case "consolidate" -> consolidate(root, scope);
                 case "forget" -> operation(memoryService.forget(new MemoryService.Forget(scope, text(root, "id"))));
                 case "list" -> ToolResult.success(formatList(memoryService.list(scope)));
                 case "show" -> ToolResult.success(formatEntry(memoryService.show(scope, text(root, "id"))));
@@ -144,7 +148,7 @@ public final class MemoryTool extends BaseTool {
                 .name(name())
                 .description(description())
                 .parameters(JsonObjectSchema.builder()
-                        .addStringProperty("action", "操作: remember、forget、list、show")
+                        .addStringProperty("action", "操作: remember、consolidate、forget、list、show")
                         .addStringProperty("scope", "作用域: USER 或 PROJECT")
                         .addStringProperty("id", "稳定记忆标识；remember 可省略，其他按需提供")
                         .addStringProperty("type", "remember 类型: PREFERENCE、FEEDBACK、CONTEXT、REFERENCE")
@@ -153,6 +157,7 @@ public final class MemoryTool extends BaseTool {
                         .addStringProperty("description", "remember 适用条件摘要，不超过 200 个字符")
                         .addStringProperty("content", "remember 长期记忆正文")
                         .addStringProperty("source_session_id", "可选来源会话标识，仅用于诊断")
+                        .addStringProperty("decision", "consolidate 裁决: CREATE、UPDATE、NOOP、CONFLICT")
                         .required(List.of("action", "scope"))
                         .build())
                 .build();
@@ -176,15 +181,36 @@ public final class MemoryTool extends BaseTool {
     }
 
     /**
+     * 解析四态裁决并委托统一记忆服务，裁决与存储状态不一致时不会覆盖旧 topic。
+     */
+    private ToolResult consolidate(JsonNode root, MemoryEntry.Scope scope) {
+        MemoryService.Outcome decision = parseEnum(MemoryService.Outcome.class, text(root, "decision"), "decision");
+        MemoryService.Operation result = memoryService.consolidate(new MemoryService.Remember(
+                optionalText(root, "id"),
+                scope,
+                parseEnum(MemoryEntry.Type.class, text(root, "type"), "type"),
+                parseEnum(MemoryEntry.Activation.class, text(root, "activation"), "activation"),
+                text(root, "name"),
+                text(root, "description"),
+                text(root, "content"),
+                optionalText(root, "source_session_id")
+        ), decision);
+        return operation(result);
+    }
+
+    /**
      * 将统一操作结果转换为模型可判断的稳定文本。
      */
     private static ToolResult operation(MemoryService.Operation result) {
         if (!result.success()) {
-            String code = result.errorCode() == null ? "MEMORY_OPERATION_FAILED" : result.errorCode().name();
+            String code = result.outcome() == MemoryService.Outcome.CONFLICT
+                    ? "MEMORY_CONFLICT"
+                    : result.errorCode() == null ? "MEMORY_OPERATION_FAILED" : result.errorCode().name();
             return ToolResult.error(code + ": " + result.message());
         }
         String id = result.entry() == null ? "" : ", id=" + result.entry().id();
-        return ToolResult.success("success=true, message=" + result.message() + id);
+        String outcome = result.outcome() == null ? "" : ", outcome=" + result.outcome();
+        return ToolResult.success("success=true, message=" + result.message() + id + outcome);
     }
 
     /**
