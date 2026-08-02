@@ -1,165 +1,222 @@
 # My Claude Code
 
-> 面向本地工作区的 Java Agent Harness：把模型、工具、权限、上下文与会话运行时组合成一个可恢复的执行系统。
+> 参考 Claude Code 设计思想、使用 Java 实现的本地 Agent Harness。
 
-![Java](https://img.shields.io/badge/Java-17-ED8B00?logo=openjdk&logoColor=white)
-![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5-6DB33F?logo=springboot&logoColor=white)
-![LangChain4j](https://img.shields.io/badge/LangChain4j-1.2-blue)
-![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
+My Claude Code 面向本地工作区，把大模型从一次性对话扩展为可持续执行任务的运行时：它负责维护工作上下文、协调工具调用、控制权限和审批、压缩超长上下文、管理跨会话记忆，并将每一步以事件流反馈给客户端。
 
-My Claude Code 将大模型的推理能力与本地工作区、工具调用、权限审批、上下文管理和任务执行连接起来。它不绑定某个垂直业务场景，而是提供一个可以被桌面端或其他客户端复用的 Agent 运行时。
-
-它参考了 Claude Code 的产品与 Harness 设计理念，但不是 Claude Code 的复刻，也不隶属于 Anthropic。核心后端使用 Java 17、Spring Boot 与 LangChain4j 实现，并提供 React + Tauri 桌面端。
-
-> [!IMPORTANT]
-> 项目目前处于积极开发阶段，接口、配置和桌面端体验仍可能发生变化，暂不建议直接用于无人值守的生产环境。
-
-## 核心能力
-
-- **Agent Loop**：支持模型推理、工具调用、结果回填、继续决策与停止条件。
-- **本地工具系统**：内置 Bash、文件读写与编辑、Glob、Grep、Todo 等工作区工具。
-- **权限与审批**：提供逐次询问、项目内自动授权和自动批准三种权限模式，并支持单次或会话级授权。
-- **上下文工程**：具备 token 预算、工具结果微压缩、自动摘要压缩、检查点与压缩后恢复。
-- **会话运行时**：同一会话串行执行、不同会话并行运行，通过 JSONL 持久化并支持历史恢复。
-- **实时事件流**：通过 HTTP API 提交任务，通过 SSE 推送模型、工具、审批和运行状态事件。
-- **长期记忆**：支持用户级与项目级记忆、自动提取、索引、相关内容召回和上下文注入。
-- **子 Agent 与后台任务**：可委派独立任务，查询、停止子任务，并隔离工具范围与权限策略。
-- **项目指令**：可读取工作区中的 `CLAUDE.md` 与 `.claude/CLAUDE.md`，将项目约束注入 Agent 上下文。
-- **桌面客户端**：基于 React 19、Tauri 2 和 TypeScript，提供会话、审批、工具过程与工作区交互界面。
-
-## 设计取舍
-
-My Claude Code 把“模型会说什么”和“系统允许做什么”明确分开。下面这些约束贯穿后端实现，也决定了模块如何组织：
-
-- **协议与运行时分离**：Controller 只负责 HTTP、DTO 和 SSE；Agent、Chat、Session 和 Tool 不依赖 Spring MVC。
-- **单一可变状态所有者**：一个 `SessionRuntime` 持有一个会话的运行状态；同一会话的 Run 串行执行，不同会话可以并行。
-- **工具执行有固定边界**：每次调用按 `lookup -> parse -> validate -> permission -> approval -> execute -> normalize` 流程处理，工具本身不能绕过权限判断。
-- **策略保持独立**：Agent、Chat、Subagent 是三种不同的执行策略；共享稳定阶段，但不通过一套巨型循环隐藏行为差异。
-- **记忆与压缩分层**：上下文压缩只处理当前会话，长期记忆只处理跨会话事实，二者不会互相读取对方的持久化数据。
-- **恢复优先于“重新开始”**：运行过程写入 JSONL，并通过检查点、摘要和恢复提示降低长任务中断后的重建成本。
-
-这样可以让模型、工具和 UI 各自可替换，并为每个边界提供独立测试。
-
-## 工作原理
-
-```mermaid
-flowchart LR
-    UI["React + Tauri"] -->|HTTP| Control["Spring MVC API"]
-    Control --> Host["RuntimeHost"]
-    Host --> Session["SessionRuntime"]
-    Session --> Agent["AgentLoop / ChatLoop"]
-    Agent --> Context["Context & Compaction"]
-    Agent --> Tools["Tool Catalog & Permission"]
-    Agent --> Memory["Long-term Memory"]
-    Agent --> LLM["LangChain4j / OpenAI-compatible API"]
-    Tools --> Subagent["Subagent & Background Tasks"]
-    Session --> Store["JSONL Transcript"]
-    Session -->|SSE| UI
-```
-
-一次 Agent 请求会经历以下过程：
-
-1. 客户端创建会话并订阅 SSE 事件。
-2. Run 进入对应会话的串行队列，`AgentLoop` 组装模型上下文。
-3. 模型返回工具调用后，Harness 依次完成查找、参数解析、校验、权限判断、审批和执行。
-4. 工具结果回填模型，循环继续，直到模型给出最终答案或运行终止。
-5. 会话过程写入 JSONL；上下文接近窗口上限时自动压缩并保留恢复信息。
+项目不绑定特定业务领域。桌面端只是一个客户端，Harness 后端可以通过本地 HTTP/SSE API 被其他客户端复用。
 
 ## 技术栈
 
-| 范围 | 技术 |
+| 层次 | 技术 |
 | --- | --- |
-| Agent 后端 | Java 17、Spring Boot 3.5、LangChain4j 1.2 |
-| 模型协议 | OpenAI-compatible Chat API |
-| API 与事件 | REST、Server-Sent Events |
-| 持久化 | 本地文件、JSONL |
-| 桌面端 | React 19、TypeScript、Vite、Tauri 2 |
-| 测试 | JUnit 5、ArchUnit、Node Test Runner |
+| 运行时 | Java 17、Spring Boot 3.5 |
+| 模型接入 | LangChain4j 1.2、OpenAI-compatible Chat API |
+| 服务协议 | REST、Server-Sent Events（SSE） |
+| 状态与持久化 | 本地文件、JSONL Transcript、Markdown Memory Topic |
+| 桌面客户端 | React 19、TypeScript、Vite、Tauri 2 |
+| 测试与约束 | JUnit 5、ArchUnit、Node Test Runner |
 
-## 工程质量
+## 核心能力
 
-后端测试覆盖 Agent/Chat 循环、会话串行队列、工具权限、审批、上下文压缩、长期记忆、JSONL 恢复和包依赖方向。模型调用通过 fake service 或回调替身隔离，测试不依赖真实第三方网络。
+- **可持续的 Agent 执行**：模型可以在同一任务中多次调用工具、读取结果并继续决策。
+- **本地工作区工具**：文件读写与编辑、Glob、Grep、Bash、Todo 和后台任务。
+- **安全的工具边界**：统一做输入校验、路径约束、权限判断和用户审批。
+- **长上下文续航**：在模型请求真正超出预算前，自动压缩可丢弃结果、复用会话摘要或生成新的摘要。
+- **跨会话记忆**：按用户和项目隔离长期记忆，只召回与当前输入相关且在预算内的内容。
+- **会话可观察与恢复**：Run 通过 `202 Accepted` 进入后台队列，过程通过 SSE 推送，转录写入 JSONL。
+- **客户端无关**：桌面端使用同一套本地 API，其他 CLI、Web 或自动化客户端也可以接入。
 
-架构约束由 ArchUnit 测试保护，文档规则还会检查业务类的职责说明和公开契约。后端完整测试集可通过 `mvn test` 一次运行。
+## 核心设计
+
+### 1. Agent Loop
+
+Agent Loop 是 Harness 的主执行闭环。它不把模型当作一次请求，而是把“请求模型、处理工具、回填结果、继续请求”组织成一个可停止、可观察的状态机。
+
+```mermaid
+flowchart TD
+    Input["用户输入 / Run"] --> Prepare["组装完整请求上下文"]
+    Prepare --> Model["调用模型"]
+    Model --> Decision{"是否返回工具调用"}
+    Decision -- "否" --> Final["生成最终响应"]
+    Decision -- "是" --> Parse["解析并校验工具请求"]
+    Parse --> Permission["权限模型判断"]
+    Permission --> Approval{"是否需要审批"}
+    Approval -- "是" --> User["等待用户决定"]
+    User --> Approved{"允许执行"}
+    Approved -- "否" --> Denied["生成拒绝结果"]
+    Approved -- "是" --> Execute["执行工具"]
+    Approval -- "否" --> Execute
+    Execute --> Result["规范化工具结果"]
+    Denied --> Result
+    Result --> Record["更新工作历史与 Transcript"]
+    Record --> Prepare
+    Final --> Events["发送响应与运行事件"]
+```
+
+核心不变量：
+
+- 每次模型请求都基于当前完整工作历史，而不是孤立的最后一条消息。
+- 工具请求和工具结果必须配对，并按稳定顺序回填。
+- 同一会话的 Run 按提交顺序串行执行；会话之间可以并行。
+- 每个阶段都能发出结构化事件，客户端不需要猜测 Agent 当前处于什么状态。
+
+### 2. 上下文压缩
+
+上下文压缩的目标不是简单删除旧消息，而是在不破坏工具调用结构和用户约束的前提下，为下一次模型请求重建一个可验证的上下文。
+
+```mermaid
+flowchart TD
+    Start["模型调用前"] --> Measure["计量完整请求\nSystem Prompt + History + Tools + Memory"]
+    Measure --> Capacity{"是否接近上下文上限"}
+    Capacity -- "否" --> Send["发送模型请求"]
+    Capacity -- "是" --> Micro["Micro Compact\n清理可重新获取的旧工具结果"]
+    Micro --> ReMeasure1["重新构建并计量请求"]
+    ReMeasure1 --> Enough1{"预算足够"}
+    Enough1 -- "是" --> Send
+    Enough1 -- "否" --> Checkpoint["应用当前会话摘要检查点"]
+    Checkpoint --> ReMeasure2["重新构建并计量请求"]
+    ReMeasure2 --> Enough2{"预算足够"}
+    Enough2 -- "是" --> Restore["加入必要的恢复提示"]
+    Enough2 -- "否" --> Summary["LLM Summary Compact\n按完整回合分块摘要"]
+    Summary --> Rebuild["重建摘要、边界和最近历史"]
+    Rebuild --> Restore
+    Restore --> ReMeasureRestore["重新计量恢复后的请求"]
+    ReMeasureRestore --> Validate["最终预算与消息结构校验"]
+    Validate --> Valid{"校验通过"}
+    Valid -- "是" --> Commit["原子提交新检查点并发送"]
+    Valid -- "否" --> Block["阻止超限请求并返回可诊断错误"]
+```
+
+压缩采用由低成本到高成本的三级策略：
+
+1. **Micro Compact**：只处理可以从工作区重新读取的旧工具结果，不调用模型。
+2. **Session Summary**：复用当前会话已生成的摘要检查点，替代它已经覆盖的历史。
+3. **LLM Summary**：对旧历史按完整回合分块总结，生成新的摘要和覆盖边界。
+
+每次策略变化后都会重新构建完整请求并计量；系统不在并行工具批次执行中修改历史，也不会在摘要失败时静默丢弃用户输入。
+
+### 3. 记忆系统
+
+长期记忆只保存跨会话仍有价值的信息，例如用户偏好、协作反馈和稳定的项目背景。当前任务状态、临时调试过程和会话摘要不属于长期记忆。
+
+```mermaid
+flowchart LR
+    Turn["会话中的用户表达"] --> Candidate["显式记住或后台提取候选"]
+    Candidate --> Classify["判断作用域、类型与激活方式"]
+    Classify --> Consolidate["与已有 Topic 合并\nCREATE / UPDATE / NOOP / CONFLICT"]
+    Consolidate --> Validate["校验敏感信息、格式与预算"]
+    Validate --> Store["原子写入 Topic"]
+    Store --> Index["从 Topic 重建 MEMORY.md 索引"]
+
+    Query["下一次用户输入"] --> Always["加载预算内 ALWAYS 记忆"]
+    Query --> CandidateIndex["从用户级与项目级索引筛选候选"]
+    CandidateIndex --> Recall["按当前输入召回 Top-K RELEVANT Topic"]
+    Always --> Context["构造请求期参考上下文"]
+    Recall --> Context
+    Context --> Model["注入模型请求\n不写入系统提示词和 Transcript"]
+```
+
+设计要点：
+
+- 用户级和项目级是两个隔离的 Memory Namespace。
+- Topic 文件是事实来源，`MEMORY.md` 只是可重建的派生索引。
+- `ALWAYS` 只用于少量稳定偏好；其他内容默认按当前输入以 `RELEVANT` 方式召回。
+- 所有写入都经过统一记忆服务，并在命名空间内原子更新；后台提取失败不阻塞主 Agent。
+- 记忆正文以低优先级参考消息注入当前请求，不覆盖系统规则和用户当前指令。
+
+### 4. 权限模型
+
+权限模型把“模型请求了什么”和“系统是否允许执行”分成两个阶段。任何工具都必须经过统一的权限管线，不能在工具内部绕过审批。
+
+```mermaid
+flowchart TD
+    Request["工具调用请求"] --> Parse["解析参数与规范化路径"]
+    Parse --> Validate["Schema、输入和工作区边界校验"]
+    Validate --> DenyRule{"命中拒绝规则"}
+    DenyRule -- "是" --> Deny["拒绝执行"]
+    DenyRule -- "否" --> AskRule{"命中询问规则"}
+    AskRule -- "是" --> Approval["进入审批队列"]
+    AskRule -- "否" --> AllowRule{"命中允许规则"}
+    AllowRule -- "是" --> Execute["执行工具"]
+    AllowRule -- "否" --> Mode{"权限模式兜底"]
+    Mode -- "ask_every_time" --> Approval
+    Mode -- "project_auto 且在工作区内" --> Execute
+    Mode -- "auto_approve" --> Execute
+    Approval --> Decision{"用户决定"}
+    Decision -- "allow_once" --> Execute
+    Decision -- "allow_for_session" --> SessionRule["记录会话级允许规则"]
+    SessionRule --> Execute
+    Decision -- "deny" --> Deny
+    Execute --> Result["返回标准化工具结果"]
+```
+
+权限模式：
+
+| 模式 | 默认行为 |
+| --- | --- |
+| `ask_every_time` | 未命中允许规则时请求审批，适合首次运行 |
+| `project_auto` | 工作区允许目录内自动执行，越界操作仍需审批 |
+| `auto_approve` | 自动批准工具调用，仅适合受控环境 |
+
+## 项目结构
+
+```text
+.
+├── src/main/java/cn/ayice
+│   ├── Main.java                 # CLI 入口
+│   └── veyra
+│       ├── boot                 # 运行时对象装配与生命周期
+│       ├── control              # HTTP API、DTO、SSE 和错误边界
+│       ├── runtime              # Run 编排与会话运行时
+│       ├── context              # Prompt、项目指令和请求上下文
+│       ├── compaction           # 上下文预算、压缩与检查点
+│       ├── memory               # 长期记忆、召回和自动提取
+│       ├── tool                 # 工具目录、执行和权限模型
+│       ├── session               # Transcript、事件和会话状态
+│       ├── subagent              # 子任务运行时
+│       └── llm                  # LangChain4j 模型调用
+├── src/test                    # 单元、集成和架构约束测试
+├── veyra-desktop               # React + Tauri 客户端
+└── docs                        # 架构规范与设计文档
+```
 
 ## 快速开始
 
-### 1. 环境要求
-
-仅运行后端需要：
+### 环境要求
 
 - JDK 17+
 - Maven 3.9+
-- 一个支持工具调用的 OpenAI-compatible 模型服务
+- 支持工具调用的 OpenAI-compatible 模型服务
+- 构建桌面端还需要 Node.js 20+、Rust stable 和 Tauri 2 系统依赖
 
-运行桌面端还需要：
-
-- Node.js 20+
-- Rust stable
-- [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
-
-桌面端启动器当前主要面向 Windows 开发环境；纯 Java 后端不受此限制。
-
-### 2. 获取项目
-
-```bash
-git clone https://github.com/codingayice/my-claude-code.git
-cd my-claude-code
-```
-
-### 3. 配置模型
-
-默认配置使用 DeepSeek 的 OpenAI-compatible API。先设置 API Key：
+### 启动后端
 
 ```powershell
-# PowerShell
+git clone https://github.com/codingayice/my-claude-code.git
+cd my-claude-code
+
 $env:DEEPSEEK_API_KEY = "your-api-key"
-```
-
-```bash
-# macOS / Linux
-export DEEPSEEK_API_KEY="your-api-key"
-```
-
-如需使用其他兼容服务，创建一份本地 YAML 配置，并修改 `model` 段：
-
-```yaml
-model:
-  name: your-model-name
-  baseUrl: https://your-provider.example/v1
-  apiKey: ${YOUR_API_KEY}
-  temperature: 0.7
-  maxTokens: 8192
-  timeoutSeconds: 120
-```
-
-模型需要支持 OpenAI-compatible 的工具调用格式，否则 Agent 模式无法正常工作。
-
-### 4. 构建并启动后端
-
-```bash
 mvn test
 mvn package
 java -Dfile.encoding=UTF-8 -jar target/veyra-1.0-SNAPSHOT.jar --port 17361
 ```
 
-使用自定义配置时：
+默认配置位于 [`src/main/resources/config.yaml`](src/main/resources/config.yaml)。使用外部配置文件：
 
-```bash
-java -Dfile.encoding=UTF-8 -jar target/veyra-1.0-SNAPSHOT.jar \
-  --config config.local.yaml \
+```powershell
+java -Dfile.encoding=UTF-8 -jar target/veyra-1.0-SNAPSHOT.jar `
+  --config config.local.yaml `
   --port 17361
 ```
 
-Windows PowerShell 可以写成一行，或使用反引号替代上面的续行符。服务仅监听 `127.0.0.1`，启动后可检查：
+检查服务：
 
-```bash
-curl http://127.0.0.1:17361/v1/health
+```powershell
+curl.exe http://127.0.0.1:17361/v1/health
 ```
 
-### 5. 启动桌面端
-
-桌面端在开发模式下会自行启动 Java Agent。首次运行前，需要编译后端并生成依赖类路径：
+### 启动桌面端
 
 ```powershell
 mvn compile
@@ -172,110 +229,18 @@ npm run typecheck
 npm run tauri dev
 ```
 
-## 配置说明
-
-默认配置位于 [`src/main/resources/config.yaml`](src/main/resources/config.yaml)。可通过 `--config <path>` 指定外部配置文件。
-
-| 配置项 | 说明 | 默认值 |
-| --- | --- | --- |
-| `model.name` | 模型名称 | `deepseek-v4-flash` |
-| `model.baseUrl` | OpenAI-compatible API 地址 | `https://api.deepseek.com/v1` |
-| `model.apiKey` | API Key，支持 `${ENV_NAME}` 插值 | `${DEEPSEEK_API_KEY}` |
-| `context.maxRounds` | Agent 最大循环轮数，`0` 表示不设固定轮数 | `0` |
-| `context.maxContextTokens` | 模型上下文窗口预算 | `128000` |
-| `context.autoCompactEnabled` | 是否自动压缩上下文 | `true` |
-| `memory.dir` | 会话与压缩恢复数据目录 | `~/.mycc` |
-| `memory.longTermDir` | 长期记忆目录 | `~/.veyra/memory` |
-| `memory.autoExtractionEnabled` | 是否自动提取长期记忆 | `true` |
-| `permission.mode` | 默认工具权限模式 | `ask_every_time` |
-
-权限模式：
-
-| 模式 | 行为 |
-| --- | --- |
-| `ask_every_time` | 未命中已有规则时请求用户审批，适合首次使用 |
-| `project_auto` | 项目目录内按权限规则执行，超出范围时请求审批 |
-| `auto_approve` | 自动批准工具调用，风险最高，仅建议在受控环境使用 |
-
-## HTTP API 示例
-
-后端的稳定入口位于 `/v1`。创建会话：
-
-```bash
-curl -X POST http://127.0.0.1:17361/v1/sessions
-```
-
-订阅会话事件：
-
-```bash
-curl -N http://127.0.0.1:17361/v1/sessions/<sessionId>/events
-```
-
-提交 Agent 任务：
-
-```bash
-curl -X POST http://127.0.0.1:17361/v1/sessions/<sessionId>/runs \
-  -H "Content-Type: application/json" \
-  -d '{"input":"分析当前项目并修复失败的测试","mode":"agent"}'
-```
-
-`mode` 可选值：
-
-- `agent`：允许模型使用工具完成任务，默认模式。
-- `chat`：仅进行对话，不进入工具执行分支。
-
-Run 提交成功后立即返回 `202 Accepted`，后续过程与结果通过 SSE 事件流发送。更多端点可查看 [`AgentController.java`](src/main/java/cn/ayice/veyra/control/api/AgentController.java)。
-
-## 项目结构
-
-```text
-.
-├── src/main/java/cn/ayice/veyra
-│   ├── boot          # Spring 装配与运行时对象图
-│   ├── control       # HTTP、DTO、SSE 与错误边界
-│   ├── runtime       # Run、Agent、Chat 编排
-│   ├── session       # 会话状态、事件、JSONL 与恢复
-│   ├── context       # Prompt、项目指令与模型请求组装
-│   ├── compaction    # 上下文预算、压缩与检查点
-│   ├── memory        # 跨会话长期记忆
-│   ├── tool          # 工具目录、权限、审批与内置工具
-│   ├── subagent      # 子 Agent 与任务生命周期
-│   ├── interaction   # 斜杠命令
-│   └── llm           # LangChain4j 模型接入
-├── src/test          # 单元、集成与架构约束测试
-├── veyra-desktop     # React + Tauri 桌面端
-└── docs              # 架构规范与设计文档
-```
-
-详细的依赖方向、并发约束和开发规则见下方设计文档。
+桌面端开发启动器会使用 `target/classes` 和 `target/classpath.txt` 启动本地 Agent 服务。
 
 ## 设计文档
 
-如果你想从实现细节开始阅读，可以按下面的顺序了解关键子系统：
-
-- [架构与开发规范](docs/veyra-architecture-development-guidelines.md)：包职责、依赖方向、并发与测试约束。
-- [记忆系统设计](docs/design/veyra-memory-system-design.md)：用户级/项目级长期记忆、索引与召回边界。
-- [上下文压缩增强设计](docs/design/veyra-context-compaction-enhancement-design.md)：预算、微压缩、摘要和恢复提示。
-- [中断运行恢复设计](docs/design/veyra-interrupted-run-recovery-design.md)：检查点、JSONL 转录和恢复流程。
-- [模块收敛设计](docs/design/veyra-project-module-convergence-design.md)：从能力边界到包结构的演进记录。
-
-## 开发与贡献
-
-欢迎提交 Issue 和 Pull Request。开始修改前请先阅读架构规范，并至少运行受影响的测试：
-
-```bash
-mvn test
-```
-
-涉及桌面端时同时运行：
-
-```bash
-cd veyra-desktop
-npm test
-npm run typecheck
-```
-
+- [架构与开发规范](docs/veyra-architecture-development-guidelines.md)：模块边界、依赖方向、并发和测试约束。
+- [LangChain4j 架构设计](docs/design/veyra-langchain4j-architecture-design.md)：模型接入和请求边界。
+- [上下文压缩设计](docs/design/veyra-context-compaction-enhancement-design.md)：三级压缩、预算和检查点。
+- [长期记忆设计](docs/design/veyra-memory-system-design.md)：Topic、索引、命名空间和召回。
+- [中断运行恢复设计](docs/design/veyra-interrupted-run-recovery-design.md)：JSONL Transcript 与恢复语义。
 
 ## 致谢
 
-本项目参考了 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)、[Pi](https://github.com/badlogic/pi-mono)、[Mem0](https://github.com/mem0ai/mem0) 和 [LangGraph](https://github.com/langchain-ai/langgraph) 等项目的设计理念，感谢开源社区的分享与实践。
+本项目参考了 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)、[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)、[Pi](https://github.com/badlogic/pi-mono)、[Mem0](https://github.com/mem0ai/mem0) 和 [LangGraph](https://github.com/langchain-ai/langgraph) 等项目的设计理念，并使用 [Spring Boot](https://spring.io/projects/spring-boot)、[LangChain4j](https://github.com/langchain4j/langchain4j) 与 [Tauri](https://tauri.app/) 构建。
+
+My Claude Code 是独立的社区实现，与 Anthropic 不存在隶属、授权或背书关系。
