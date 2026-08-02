@@ -1,5 +1,6 @@
 package cn.ayice.veyra.memory;
 
+import cn.ayice.veyra.memory.MemoryEntry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,35 +25,35 @@ class MemoryFileStoreTest {
     @Test
     void topicIsSourceOfTruthAndIndexCanBeRebuilt() throws Exception {
         MemoryFileStore store = store();
-        MemoryEntry entry = entry("project-background", MemoryScope.PROJECT, "项目背景");
+        MemoryEntry entry = entry("project-background", MemoryEntry.Scope.PROJECT, "项目背景");
 
         store.write(entry);
 
-        Path topic = store.paths().topic(MemoryScope.PROJECT, entry.id());
+        Path topic = store.paths().topic(MemoryEntry.Scope.PROJECT, entry.id());
         String topicText = Files.readString(topic);
-        String indexText = Files.readString(store.paths().index(MemoryScope.PROJECT));
+        String indexText = Files.readString(store.paths().index(MemoryEntry.Scope.PROJECT));
         assertTrue(topicText.contains("scope: project"));
         assertTrue(topicText.contains("activation: relevant"));
         assertTrue(indexText.contains("[项目背景](topics/project-background.md)"));
         assertFalse(indexText.contains(entry.content()));
 
-        Files.writeString(store.paths().index(MemoryScope.PROJECT), "broken");
-        store.rebuildIndex(MemoryScope.PROJECT);
+        Files.writeString(store.paths().index(MemoryEntry.Scope.PROJECT), "broken");
+        store.rebuildIndex(MemoryEntry.Scope.PROJECT);
 
-        assertEquals(entry, store.read(MemoryScope.PROJECT, entry.id()).orElseThrow());
-        assertTrue(store.readIndex(MemoryScope.PROJECT).contains("project-background.md"));
+        assertEquals(entry, store.read(MemoryEntry.Scope.PROJECT, entry.id()).orElseThrow());
+        assertTrue(store.readIndex(MemoryEntry.Scope.PROJECT).contains("project-background.md"));
     }
 
     @Test
     void deleteRemovesTopicAndDerivedIndexEntry() {
         MemoryFileStore store = store();
-        MemoryEntry entry = entry("testing-feedback", MemoryScope.USER, "测试反馈");
+        MemoryEntry entry = entry("testing-feedback", MemoryEntry.Scope.USER, "测试反馈");
         store.write(entry);
 
-        assertTrue(store.delete(MemoryScope.USER, entry.id()));
+        assertTrue(store.delete(MemoryEntry.Scope.USER, entry.id()));
 
-        assertTrue(store.read(MemoryScope.USER, entry.id()).isEmpty());
-        assertFalse(store.readIndex(MemoryScope.USER).contains(entry.id()));
+        assertTrue(store.read(MemoryEntry.Scope.USER, entry.id()).isEmpty());
+        assertFalse(store.readIndex(MemoryEntry.Scope.USER).contains(entry.id()));
     }
 
     @Test
@@ -64,7 +65,7 @@ class MemoryFileStoreTest {
             for (int index = 0; index < 20; index++) {
                 int current = index;
                 writes.add(() -> {
-                    store.write(entry("memory-" + current, MemoryScope.PROJECT, "记忆 " + current));
+                    store.write(entry("memory-" + current, MemoryEntry.Scope.PROJECT, "记忆 " + current));
                     return null;
                 });
             }
@@ -79,8 +80,8 @@ class MemoryFileStoreTest {
             executor.shutdownNow();
         }
 
-        assertEquals(20, store.list(MemoryScope.PROJECT).size());
-        assertEquals(20, store.readIndex(MemoryScope.PROJECT).lines().filter(line -> line.startsWith("- [")).count());
+        assertEquals(20, store.list(MemoryEntry.Scope.PROJECT).size());
+        assertEquals(20, store.readIndex(MemoryEntry.Scope.PROJECT).lines().filter(line -> line.startsWith("- [")).count());
     }
 
     @Test
@@ -94,7 +95,7 @@ class MemoryFileStoreTest {
                 () -> new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200)
         );
 
-        assertEquals(MemoryErrorCode.MEMORY_WRITE_FAILED, error.code());
+        assertEquals(MemoryException.Code.MEMORY_WRITE_FAILED, error.code());
     }
 
     private MemoryFileStore store() {
@@ -107,13 +108,13 @@ class MemoryFileStoreTest {
         );
     }
 
-    private static MemoryEntry entry(String id, MemoryScope scope, String name) {
+    private static MemoryEntry entry(String id, MemoryEntry.Scope scope, String name) {
         Instant now = Instant.parse("2026-07-26T10:00:00Z");
         return new MemoryEntry(
                 id,
                 scope,
-                MemoryType.CONTEXT,
-                MemoryActivation.RELEVANT,
+                MemoryEntry.Type.CONTEXT,
+                MemoryEntry.Activation.RELEVANT,
                 name,
                 name + "的长期说明",
                 name + "的长期正文",

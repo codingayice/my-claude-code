@@ -1,16 +1,15 @@
 package cn.ayice.veyra.context;
 
+import cn.ayice.veyra.memory.MemoryEntry;
 import cn.ayice.veyra.config.AppConfig;
-import cn.ayice.veyra.compaction.AutoCompactConfig;
-import cn.ayice.veyra.memory.MemoryActivation;
-import cn.ayice.veyra.memory.MemoryContextBuilder;
+import cn.ayice.veyra.compaction.CompactionConfig;
+import cn.ayice.veyra.memory.MemoryEntry.Activation;
 import cn.ayice.veyra.memory.MemoryFileStore;
 import cn.ayice.veyra.memory.MemoryPaths;
-import cn.ayice.veyra.memory.MemoryRecallService;
-import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryEntry.Scope;
 import cn.ayice.veyra.memory.MemoryService;
-import cn.ayice.veyra.memory.MemoryType;
-import cn.ayice.veyra.memory.RememberMemoryCommand;
+import cn.ayice.veyra.memory.MemoryEntry.Type;
+import cn.ayice.veyra.memory.MemoryService.Remember;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -36,12 +35,12 @@ class ContextServiceMemoryTest {
                 new MemoryPaths(tempDir.resolve("memory").toString(), tempDir.toString()),
                 16 * 1024, 200, 25 * 1024, 200
         );
-        MemoryService service = new MemoryService(store);
-        service.remember(new RememberMemoryCommand(
+        MemoryService service = new MemoryService(store, 4_096, 5, 4_096, 20_480);
+        service.remember(new MemoryService.Remember(
                 "java-style",
-                MemoryScope.PROJECT,
-                MemoryType.FEEDBACK,
-                MemoryActivation.RELEVANT,
+                MemoryEntry.Scope.PROJECT,
+                MemoryEntry.Type.FEEDBACK,
+                MemoryEntry.Activation.RELEVANT,
                 "Java 长字符串",
                 "Java 长字符串使用文本块",
                 "静态长字符串不要连续 append。",
@@ -51,8 +50,8 @@ class ContextServiceMemoryTest {
                 List.of(),
                 Map.of(),
                 new TestConfig(tempDir),
-                new MemoryContextBuilder(service, store, new MemoryRecallService(store), 4_096, 5, 4_096, 20_480),
-                new AutoCompactConfig(128_000, 4_096, true, true, null, true)
+                service,
+                new CompactionConfig(128_000, 4_096, true, true, null, true).contextTokenBudget()
         );
         List<WorkingMessage> history = List.of(
                 WorkingMessage.original(1, UserMessage.from("请修改 Java 长字符串实现"))
@@ -78,12 +77,12 @@ class ContextServiceMemoryTest {
                 new MemoryPaths(tempDir.resolve("memory").toString(), tempDir.toString()),
                 16 * 1024, 200, 25 * 1024, 200
         );
-        MemoryService service = new MemoryService(store);
-        service.remember(new RememberMemoryCommand(
+        MemoryService service = new MemoryService(store, 4_096, 5, 4_096, 20_480);
+        service.remember(new MemoryService.Remember(
                 "java-style",
-                MemoryScope.PROJECT,
-                MemoryType.FEEDBACK,
-                MemoryActivation.RELEVANT,
+                MemoryEntry.Scope.PROJECT,
+                MemoryEntry.Type.FEEDBACK,
+                MemoryEntry.Activation.RELEVANT,
                 "Java 长字符串",
                 "Java 长字符串使用文本块",
                 "静态长字符串不要连续 append。",
@@ -93,8 +92,8 @@ class ContextServiceMemoryTest {
                 List.of(),
                 Map.of(),
                 new TestConfig(tempDir),
-                new MemoryContextBuilder(service, store, new MemoryRecallService(store), 4_096, 5, 4_096, 20_480),
-                new AutoCompactConfig(128_000, 4_096, true, true, null, true)
+                service,
+                new CompactionConfig(128_000, 4_096, true, true, null, true).contextTokenBudget()
         );
         List<WorkingMessage> history = List.of(
                 WorkingMessage.original(1, UserMessage.from("请修改 Java 长字符串实现")),

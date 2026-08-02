@@ -10,7 +10,7 @@ import cn.ayice.veyra.tool.builtin.FileReadTool;
 import cn.ayice.veyra.tool.builtin.FileWriteTool;
 import cn.ayice.veyra.tool.builtin.GlobTool;
 import cn.ayice.veyra.tool.builtin.GrepTool;
-import cn.ayice.veyra.tool.permission.AgentPermissionPolicy;
+import cn.ayice.veyra.subagent.AgentProfile.PermissionPolicy;
 import cn.ayice.veyra.tool.state.FileStateCache;
 
 import java.util.ArrayList;
@@ -28,7 +28,7 @@ public final class SubagentToolCatalogs {
 
     private static ToolCatalog create(AgentProfile profile, MemoryService memoryService, Executor ioExecutor) {
         FileStateCache fileStateCache = new FileStateCache();
-        AgentPermissionPolicy policy = profile.permissionPolicy();
+        PermissionPolicy policy = profile.permissionPolicy();
         List<BaseTool> tools = new ArrayList<>();
         tools.add(new FileReadTool(fileStateCache));
         tools.add(new FileEditTool(fileStateCache));

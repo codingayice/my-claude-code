@@ -1,13 +1,13 @@
 package cn.ayice.veyra.interaction.command;
 
-import cn.ayice.veyra.memory.ForgetMemoryCommand;
+import cn.ayice.veyra.memory.MemoryService.Forget;
 import cn.ayice.veyra.memory.MemoryEntry;
-import cn.ayice.veyra.memory.MemoryErrorCode;
+import cn.ayice.veyra.memory.MemoryException.Code;
 import cn.ayice.veyra.memory.MemoryException;
-import cn.ayice.veyra.memory.MemoryExtractionStatus;
-import cn.ayice.veyra.memory.MemoryIndexEntry;
-import cn.ayice.veyra.memory.MemoryOperationResult;
-import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.runtime.MemoryExtractionCoordinator.Status;
+import cn.ayice.veyra.memory.MemoryService.IndexEntry;
+import cn.ayice.veyra.memory.MemoryService.Operation;
+import cn.ayice.veyra.memory.MemoryEntry.Scope;
 import cn.ayice.veyra.memory.MemoryService;
 
 import java.util.List;
@@ -22,12 +22,12 @@ import java.util.stream.Collectors;
 public final class MemorySlashCommand implements SlashCommand {
 
     private final MemoryService memoryService;
-    private final Supplier<MemoryExtractionStatus> extractionStatus;
+    private final Supplier<Status> extractionStatus;
 
     /**
      * 使用统一记忆服务和当前会话提取状态查询函数创建命令。
      */
-    public MemorySlashCommand(MemoryService memoryService, Supplier<MemoryExtractionStatus> extractionStatus) {
+    public MemorySlashCommand(MemoryService memoryService, Supplier<Status> extractionStatus) {
         this.memoryService = Objects.requireNonNull(memoryService, "memoryService");
         this.extractionStatus = extractionStatus;
     }
@@ -96,9 +96,9 @@ public final class MemorySlashCommand implements SlashCommand {
      * 返回启用状态、路径、topic 数量和当前会话提取状态。
      */
     private String status() {
-        int userTopics = countSafely(MemoryScope.USER);
-        int projectTopics = countSafely(MemoryScope.PROJECT);
-        MemoryExtractionStatus extraction = extractionStatus == null ? null : extractionStatus.get();
+        int userTopics = countSafely(MemoryEntry.Scope.USER);
+        int projectTopics = countSafely(MemoryEntry.Scope.PROJECT);
+        Status extraction = extractionStatus == null ? null : extractionStatus.get();
         return """
                 Enabled: %s
                 User memory path: %s
@@ -110,8 +110,8 @@ public final class MemorySlashCommand implements SlashCommand {
                 Pending extraction: %s
                 """.formatted(
                 memoryService.isEnabled(),
-                memoryService.paths().namespace(MemoryScope.USER),
-                memoryService.paths().namespace(MemoryScope.PROJECT),
+                memoryService.paths().namespace(MemoryEntry.Scope.USER),
+                memoryService.paths().namespace(MemoryEntry.Scope.PROJECT),
                 userTopics,
                 projectTopics,
                 extraction == null || extraction.lastCompletedAt() == null ? "never" : extraction.lastCompletedAt(),
@@ -125,12 +125,12 @@ public final class MemorySlashCommand implements SlashCommand {
      */
     private String list(String[] parts) {
         if (parts.length >= 3) {
-            MemoryScope scope = scope(parts[2]);
+            MemoryEntry.Scope scope = scope(parts[2]);
             return formatList(scope, memoryService.list(scope));
         }
-        return formatList(MemoryScope.USER, memoryService.list(MemoryScope.USER))
+        return formatList(MemoryEntry.Scope.USER, memoryService.list(MemoryEntry.Scope.USER))
                 + "\n\n"
-                + formatList(MemoryScope.PROJECT, memoryService.list(MemoryScope.PROJECT));
+                + formatList(MemoryEntry.Scope.PROJECT, memoryService.list(MemoryEntry.Scope.PROJECT));
     }
 
     /**
@@ -164,7 +164,7 @@ public final class MemorySlashCommand implements SlashCommand {
         if (parts.length < 4) {
             return "用法: /memory forget <user|project> <id>";
         }
-        MemoryOperationResult result = memoryService.forget(new ForgetMemoryCommand(scope(parts[2]), parts[3]));
+        MemoryService.Operation result = memoryService.forget(new MemoryService.Forget(scope(parts[2]), parts[3]));
         return result.success()
                 ? result.message() + ": " + parts[3]
                 : "操作失败 [%s]: %s".formatted(result.errorCode(), result.message());
@@ -175,12 +175,12 @@ public final class MemorySlashCommand implements SlashCommand {
      */
     private String rebuild(String[] parts) {
         if (parts.length >= 3) {
-            MemoryScope scope = scope(parts[2]);
+            MemoryEntry.Scope scope = scope(parts[2]);
             memoryService.rebuild(scope);
             return scope + " 记忆索引已重建";
         }
-        memoryService.rebuild(MemoryScope.USER);
-        memoryService.rebuild(MemoryScope.PROJECT);
+        memoryService.rebuild(MemoryEntry.Scope.USER);
+        memoryService.rebuild(MemoryEntry.Scope.PROJECT);
         return "用户和项目记忆索引已重建";
     }
 
@@ -188,8 +188,8 @@ public final class MemorySlashCommand implements SlashCommand {
      * 返回用户级和项目级长期记忆路径。
      */
     private String paths() {
-        return "用户记忆: " + memoryService.paths().namespace(MemoryScope.USER)
-                + "\n项目记忆: " + memoryService.paths().namespace(MemoryScope.PROJECT);
+        return "用户记忆: " + memoryService.paths().namespace(MemoryEntry.Scope.USER)
+                + "\n项目记忆: " + memoryService.paths().namespace(MemoryEntry.Scope.PROJECT);
     }
 
     /**
@@ -203,14 +203,14 @@ public final class MemorySlashCommand implements SlashCommand {
     /**
      * 在长期记忆关闭时避免触发受开关保护的 topic 扫描。
      */
-    private int countSafely(MemoryScope scope) {
+    private int countSafely(MemoryEntry.Scope scope) {
         return memoryService.isEnabled() ? memoryService.list(scope).size() : 0;
     }
 
     /**
      * 将索引元数据整理为适合终端查看的稳定 Markdown 列表。
      */
-    private static String formatList(MemoryScope scope, List<MemoryIndexEntry> entries) {
+    private static String formatList(MemoryEntry.Scope scope, List<MemoryService.IndexEntry> entries) {
         if (entries.isEmpty()) {
             return "## " + scope + "\n\n没有长期记忆";
         }
@@ -224,12 +224,12 @@ public final class MemorySlashCommand implements SlashCommand {
     /**
      * 将命令行作用域转换为受控枚举，并提供面向用户的参数错误。
      */
-    private static MemoryScope scope(String raw) {
+    private static MemoryEntry.Scope scope(String raw) {
         try {
-            return MemoryScope.valueOf(raw.toUpperCase(Locale.ROOT));
+            return MemoryEntry.Scope.valueOf(raw.toUpperCase(Locale.ROOT));
         } catch (Exception error) {
             throw new MemoryException(
-                    MemoryErrorCode.MEMORY_INVALID_REQUEST,
+                    MemoryException.Code.MEMORY_INVALID_REQUEST,
                     "作用域必须是 user 或 project",
                     error
             );

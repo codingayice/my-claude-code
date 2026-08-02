@@ -1,17 +1,23 @@
 package cn.ayice.veyra.compaction;
 
-import cn.ayice.veyra.context.ContextBudgetService;
 import cn.ayice.veyra.context.ContextService;
-import cn.ayice.veyra.context.FinalRequestValidator;
+import cn.ayice.veyra.context.TokenEstimator;
 import cn.ayice.veyra.context.WorkingMessage;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.request.ChatRequest;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -23,34 +29,28 @@ public final class CompactionService {
     private static final int REACTIVE_TARGET_BUFFER_TOKENS = 5_000;
 
     private final ContextService contextBuilder;
-    private final AutoCompactConfig compactConfig;
-    private final ContextBudgetService budgetService;
+    private final CompactionConfig compactConfig;
     private final MicroCompactor microCompactor;
-    private final SessionCheckpointState checkpointState;
-    private final LlmSummaryCompactor llmSummaryCompactor;
-    private final FinalRequestValidator requestValidator;
-    private final ModifiedFileSource modifiedFileSource;
+    private final CheckpointState checkpointState;
+    private final SummaryCompactor summaryCompactor;
+    private final CompactionService.ModifiedFiles modifiedFileSource;
 
     /**
      * 新压缩链路使用的完整依赖构造器。
      */
     public CompactionService(
             ContextService contextBuilder,
-            AutoCompactConfig compactConfig,
-            ContextBudgetService budgetService,
+            CompactionConfig compactConfig,
             MicroCompactor microCompactor,
-            SessionCheckpointState checkpointState,
-            LlmSummaryCompactor llmSummaryCompactor,
-            FinalRequestValidator requestValidator,
-            ModifiedFileSource modifiedFileSource
+            CheckpointState checkpointState,
+            SummaryCompactor summaryCompactor,
+            CompactionService.ModifiedFiles modifiedFileSource
     ) {
         this.contextBuilder = Objects.requireNonNull(contextBuilder, "contextBuilder");
         this.compactConfig = Objects.requireNonNull(compactConfig, "compactConfig");
-        this.budgetService = Objects.requireNonNull(budgetService, "budgetService");
         this.microCompactor = Objects.requireNonNull(microCompactor, "microCompactor");
         this.checkpointState = checkpointState;
-        this.llmSummaryCompactor = Objects.requireNonNull(llmSummaryCompactor, "llmSummaryCompactor");
-        this.requestValidator = Objects.requireNonNull(requestValidator, "requestValidator");
+        this.summaryCompactor = Objects.requireNonNull(summaryCompactor, "summaryCompactor");
         this.modifiedFileSource = Objects.requireNonNull(modifiedFileSource, "modifiedFileSource");
     }
 
@@ -59,49 +59,49 @@ public final class CompactionService {
      */
     public PreparedWorkingTurn prepareWorking(
             List<WorkingMessage> currentMessages,
-            CompactTrigger trigger,
+            CompactionService.Trigger trigger,
             long completedModelRounds,
             Path workingDir
     ) {
         List<WorkingMessage> original = List.copyOf(currentMessages);
         List<WorkingMessage> messages = original;
-        CompactStrategy strategy = CompactStrategy.NONE;
-        Optional<CheckpointCandidate> candidate = Optional.empty();
-        boolean strictLlmSummaryUsed = trigger == CompactTrigger.REACTIVE;
+        CompactionService.Strategy strategy = CompactionService.Strategy.NONE;
+        Optional<CheckpointState.Candidate> candidate = Optional.empty();
+        boolean strictLlmSummaryUsed = trigger == CompactionService.Trigger.REACTIVE;
 
         ChatRequest request = buildWorkingRequest(messages, workingDir);
-        int inputTokens = budgetService.measure(request);
+        int inputTokens = measureRequest(request);
         int preCompactInputTokens = inputTokens;
-        ContextBudgetService.CapacityState capacityState = budgetService.classify(inputTokens);
+        CapacityState capacityState = classify(inputTokens, compactConfig);
 
-        if (trigger == CompactTrigger.AUTO && compactConfig.isAutoCompactEnabled()) {
+        if (trigger == CompactionService.Trigger.AUTO && compactConfig.isAutoCompactEnabled()) {
             if (compactConfig.isMicroCompactEnabled()) {
-                cn.ayice.veyra.compaction.CompactionResult micro =
+                cn.ayice.veyra.compaction.CompactionService.Result micro =
                         microCompactor.compact(messages, completedModelRounds);
                 messages = micro.messages();
                 strategy = micro.strategy();
                 request = buildWorkingRequest(messages, workingDir);
-                inputTokens = budgetService.measure(request);
-                capacityState = budgetService.classify(inputTokens);
+                inputTokens = measureRequest(request);
+                capacityState = classify(inputTokens, compactConfig);
             }
-            if (capacityState == ContextBudgetService.CapacityState.COMPACT_REQUIRED
+            if (capacityState == CapacityState.COMPACT_REQUIRED
                     && checkpointState != null && checkpointState.current().isPresent()) {
                 messages = applySessionCheckpoint(messages, checkpointState.current().orElseThrow(), inputTokens);
-                strategy = CompactStrategy.SESSION_SUMMARY;
+                strategy = CompactionService.Strategy.SESSION_SUMMARY;
                 request = buildWorkingRequest(messages, workingDir);
-                inputTokens = budgetService.measure(request);
-                capacityState = budgetService.classify(inputTokens);
+                inputTokens = measureRequest(request);
+                capacityState = classify(inputTokens, compactConfig);
             }
         }
 
-        boolean requiresLlmSummary = trigger != CompactTrigger.AUTO
+        boolean requiresLlmSummary = trigger != CompactionService.Trigger.AUTO
                 || compactConfig.isAutoCompactEnabled()
-                && capacityState == ContextBudgetService.CapacityState.COMPACT_REQUIRED;
+                && capacityState == CapacityState.COMPACT_REQUIRED;
         if (requiresLlmSummary) {
-            int maxOutputTokens = trigger == CompactTrigger.REACTIVE
-                    ? LlmSummaryCompactor.DEFAULT_RETRY_OUTPUT_TOKENS
-                    : LlmSummaryCompactor.DEFAULT_MAX_OUTPUT_TOKENS;
-            cn.ayice.veyra.compaction.CompactionResult llm;
+            int maxOutputTokens = trigger == CompactionService.Trigger.REACTIVE
+                    ? SummaryCompactor.DEFAULT_RETRY_OUTPUT_TOKENS
+                    : SummaryCompactor.DEFAULT_MAX_OUTPUT_TOKENS;
+            cn.ayice.veyra.compaction.CompactionService.Result llm;
             try {
                 llm = runLlmSummary(messages, trigger, inputTokens, maxOutputTokens);
             } catch (PreparationException oversizedSummary) {
@@ -113,75 +113,75 @@ public final class CompactionService {
                         messages,
                         trigger,
                         inputTokens,
-                        LlmSummaryCompactor.DEFAULT_RETRY_OUTPUT_TOKENS
+                        SummaryCompactor.DEFAULT_RETRY_OUTPUT_TOKENS
                 );
                 strictLlmSummaryUsed = true;
             }
-            if (llm.strategy() == CompactStrategy.LLM_SUMMARY) {
+            if (llm.strategy() == CompactionService.Strategy.LLM_SUMMARY) {
                 messages = llm.messages();
                 strategy = llm.strategy();
                 candidate = llm.checkpointCandidate();
                 request = buildWorkingRequest(messages, workingDir);
-                inputTokens = budgetService.measure(request);
-                capacityState = budgetService.classify(inputTokens);
+                inputTokens = measureRequest(request);
+                capacityState = classify(inputTokens, compactConfig);
             }
         }
 
         WorkingMessage restoration = null;
-        if (strategy == CompactStrategy.SESSION_SUMMARY || strategy == CompactStrategy.LLM_SUMMARY) {
+        if (strategy == CompactionService.Strategy.SESSION_SUMMARY || strategy == CompactionService.Strategy.LLM_SUMMARY) {
             restoration = buildRestorationMessage();
             if (restoration != null) {
                 List<WorkingMessage> withRestoration = insertAfterSummary(messages, restoration);
                 ChatRequest restoredRequest = buildWorkingRequest(withRestoration, workingDir);
-                int restoredTokens = budgetService.measure(restoredRequest);
-                if (budgetService.classify(restoredTokens) != ContextBudgetService.CapacityState.COMPACT_REQUIRED) {
+                int restoredTokens = measureRequest(restoredRequest);
+                if (classify(restoredTokens, compactConfig) != CapacityState.COMPACT_REQUIRED) {
                     messages = withRestoration;
                     request = restoredRequest;
                     inputTokens = restoredTokens;
-                    capacityState = budgetService.classify(restoredTokens);
+                    capacityState = classify(restoredTokens, compactConfig);
                 }
             }
         }
 
-        boolean llmSummaryMissedTarget = strategy == CompactStrategy.LLM_SUMMARY
-                && (capacityState == ContextBudgetService.CapacityState.COMPACT_REQUIRED
-                || trigger == CompactTrigger.AUTO
-                && inputTokens >= budgetService.warningThreshold()
-                || trigger == CompactTrigger.REACTIVE
-                && inputTokens >= Math.max(1, budgetService.warningThreshold() - REACTIVE_TARGET_BUFFER_TOKENS));
+        boolean llmSummaryMissedTarget = strategy == CompactionService.Strategy.LLM_SUMMARY
+                && (capacityState == CapacityState.COMPACT_REQUIRED
+                || trigger == CompactionService.Trigger.AUTO
+                && inputTokens >= compactConfig.warningThreshold()
+                || trigger == CompactionService.Trigger.REACTIVE
+                && inputTokens >= Math.max(1, compactConfig.warningThreshold() - REACTIVE_TARGET_BUFFER_TOKENS));
         if (llmSummaryMissedTarget && !strictLlmSummaryUsed) {
-            cn.ayice.veyra.compaction.CompactionResult stricter =
+            cn.ayice.veyra.compaction.CompactionService.Result stricter =
                     runLlmSummary(
                             original,
                             trigger,
-                            budgetService.measure(buildWorkingRequest(original, workingDir)),
-                            LlmSummaryCompactor.DEFAULT_RETRY_OUTPUT_TOKENS
+                            measureRequest(buildWorkingRequest(original, workingDir)),
+                            SummaryCompactor.DEFAULT_RETRY_OUTPUT_TOKENS
                     );
-            if (stricter.strategy() == CompactStrategy.LLM_SUMMARY) {
+            if (stricter.strategy() == CompactionService.Strategy.LLM_SUMMARY) {
                 strictLlmSummaryUsed = true;
                 messages = stricter.messages();
                 candidate = stricter.checkpointCandidate();
                 request = buildWorkingRequest(messages, workingDir);
-                inputTokens = budgetService.measure(request);
-                capacityState = budgetService.classify(inputTokens);
+                inputTokens = measureRequest(request);
+                capacityState = classify(inputTokens, compactConfig);
             }
         }
 
-        if (capacityState == ContextBudgetService.CapacityState.COMPACT_REQUIRED) {
+        if (capacityState == CapacityState.COMPACT_REQUIRED) {
             throw new PreparationException("COMPACTION_INSUFFICIENT");
         }
-        if (trigger == CompactTrigger.REACTIVE
-                && inputTokens >= Math.max(1, budgetService.warningThreshold() - REACTIVE_TARGET_BUFFER_TOKENS)) {
+        if (trigger == CompactionService.Trigger.REACTIVE
+                && inputTokens >= Math.max(1, compactConfig.warningThreshold() - REACTIVE_TARGET_BUFFER_TOKENS)) {
             throw new PreparationException("COMPACTION_INSUFFICIENT");
         }
-        FinalRequestValidator.ValidationResult validation = requestValidator.validate(request);
+        ValidationResult validation = validateRequest(request);
         if (!validation.valid()) {
             throw new PreparationException(validation.errorCode());
         }
-        SessionCheckpointState.CommitResult commitResult = null;
+        CheckpointState.CommitResult commitResult = null;
         if (candidate.isPresent() && checkpointState != null) {
             commitResult = checkpointState.commit(candidate.orElseThrow());
-            if (commitResult.status() == SessionCheckpointState.CommitStatus.SKIPPED_CLOSED) {
+            if (commitResult.status() == CheckpointState.CommitStatus.SKIPPED_CLOSED) {
                 throw new PreparationException("SESSION_CLOSED");
             }
         }
@@ -193,7 +193,7 @@ public final class CompactionService {
                 capacityState,
                 strategy,
                 commitResult == null ? null : commitResult.status(),
-                commitResult == null || commitResult.status() != SessionCheckpointState.CommitStatus.COMMITTED
+                commitResult == null || commitResult.status() != CheckpointState.CommitStatus.COMMITTED
                         ? null
                         : commitResult.checkpoint().orElseThrow().checkpointVersion()
         );
@@ -204,21 +204,21 @@ public final class CompactionService {
      */
     public CapacityInfo inspect(List<WorkingMessage> messages, Path workingDir) {
         ChatRequest request = buildWorkingRequest(messages, workingDir);
-        int inputTokens = budgetService.measure(request);
-        return new CapacityInfo(inputTokens, budgetService.classify(inputTokens));
+        int inputTokens = measureRequest(request);
+        return new CapacityInfo(inputTokens, classify(inputTokens, compactConfig));
     }
 
     /**
      * 将摘要模型和输出预算失败转换为稳定准备错误，避免供应商异常穿透到控制层。
      */
-    private cn.ayice.veyra.compaction.CompactionResult runLlmSummary(
+    private cn.ayice.veyra.compaction.CompactionService.Result runLlmSummary(
             List<WorkingMessage> messages,
-            CompactTrigger trigger,
+            CompactionService.Trigger trigger,
             int inputTokens,
             int maxOutputTokens
     ) {
         try {
-            return llmSummaryCompactor.compact(messages, trigger, inputTokens, maxOutputTokens);
+            return summaryCompactor.compact(messages, trigger, inputTokens, maxOutputTokens);
         } catch (IllegalStateException failure) {
             String code = "LLM_SUMMARY_OUTPUT_TOO_LARGE".equals(failure.getMessage())
                     ? "LLM_SUMMARY_OUTPUT_TOO_LARGE"
@@ -234,7 +234,7 @@ public final class CompactionService {
      */
     private List<WorkingMessage> applySessionCheckpoint(
             List<WorkingMessage> messages,
-            CompactionCheckpoint checkpoint,
+            CheckpointState.Checkpoint checkpoint,
             int preCompactTokens
     ) {
         List<WorkingMessage> recent = messages.stream()
@@ -318,9 +318,9 @@ public final class CompactionService {
             ChatRequest request,
             int preCompactInputTokens,
             int inputTokens,
-            ContextBudgetService.CapacityState capacityState,
-            CompactStrategy strategy,
-            SessionCheckpointState.CommitStatus checkpointCommit,
+            CapacityState capacityState,
+            CompactionService.Strategy strategy,
+            CheckpointState.CommitStatus checkpointCommit,
             Long checkpointVersion
     ) {
         public PreparedWorkingTurn {
@@ -333,8 +333,144 @@ public final class CompactionService {
      */
     public record CapacityInfo(
             int inputTokens,
-            ContextBudgetService.CapacityState capacityState
+            CapacityState capacityState
     ) {
+    }
+
+    /**
+     * 压缩触发来源。
+     */
+    public enum Trigger {
+        AUTO,
+        MANUAL,
+        REACTIVE
+    }
+
+    /**
+     * 本轮最终采用的压缩策略。
+     */
+    public enum Strategy {
+        NONE,
+        MICRO,
+        SESSION_SUMMARY,
+        LLM_SUMMARY
+    }
+
+    /**
+     * 单步压缩算法的内部结果。
+     */
+    record Result(
+            List<WorkingMessage> messages,
+            Strategy strategy,
+            Optional<CheckpointState.Candidate> checkpointCandidate
+    ) {
+        Result {
+            messages = List.copyOf(messages);
+            checkpointCandidate = checkpointCandidate == null ? Optional.empty() : checkpointCandidate;
+        }
+    }
+
+    /**
+     * 提供当前会话最近修改文件路径的最小回调。
+     */
+    @FunctionalInterface
+    public interface ModifiedFiles {
+        /**
+         * 返回不超过指定数量的最近修改路径。
+         */
+        List<Path> recentModifiedPaths(int limit);
+    }
+
+    /**
+     * 一次完整输入请求所处的容量区间。
+     */
+    public enum CapacityState {
+        NORMAL,
+        WARNING,
+        COMPACT_REQUIRED
+    }
+
+    /**
+     * 计量完整请求中的消息和工具 Schema。
+     */
+    static int measureRequest(ChatRequest request) {
+        Objects.requireNonNull(request, "request");
+        long total = TokenEstimator.estimate(request.messages());
+        List<ToolSpecification> specifications = request.toolSpecifications();
+        if (specifications != null) {
+            for (ToolSpecification specification : specifications) {
+                total += TokenEstimator.estimateText(specification.toString());
+            }
+        }
+        return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+    }
+
+    /**
+     * 按压缩配置中的固定水位分类完整请求。
+     */
+    static CapacityState classify(int inputTokens, CompactionConfig config) {
+        if (inputTokens >= config.threshold()) {
+            return CapacityState.COMPACT_REQUIRED;
+        }
+        if (inputTokens >= config.warningThreshold()) {
+            return CapacityState.WARNING;
+        }
+        return CapacityState.NORMAL;
+    }
+
+    /**
+     * 验证工具调用 ID 唯一、请求结果完整且结果顺序与请求顺序一致。
+     */
+    static ValidationResult validateRequest(ChatRequest request) {
+        Set<String> requestIds = new HashSet<>();
+        Set<String> resultIds = new HashSet<>();
+        List<String> requestOrder = new ArrayList<>();
+        List<String> resultOrder = new ArrayList<>();
+        for (ChatMessage message : request.messages()) {
+            if (message instanceof AiMessage aiMessage && aiMessage.hasToolExecutionRequests()) {
+                for (ToolExecutionRequest toolRequest : aiMessage.toolExecutionRequests()) {
+                    if (!requestIds.add(toolRequest.id())) {
+                        return ValidationResult.invalid("DUPLICATE_TOOL_USE", toolRequest.id());
+                    }
+                    requestOrder.add(toolRequest.id());
+                }
+            } else if (message instanceof ToolExecutionResultMessage toolResult) {
+                if (!requestIds.contains(toolResult.id())) {
+                    return ValidationResult.invalid("ORPHAN_TOOL_RESULT", toolResult.id());
+                }
+                if (!resultIds.add(toolResult.id())) {
+                    return ValidationResult.invalid("DUPLICATE_TOOL_RESULT", toolResult.id());
+                }
+                resultOrder.add(toolResult.id());
+            }
+        }
+        for (String requestId : requestOrder) {
+            if (!resultIds.contains(requestId)) {
+                return ValidationResult.invalid("MISSING_TOOL_RESULT", requestId);
+            }
+        }
+        return requestOrder.equals(resultOrder)
+                ? ValidationResult.success()
+                : ValidationResult.invalid("TOOL_RESULT_ORDER", "");
+    }
+
+    /**
+     * 内部请求结构验证结果。
+     */
+    record ValidationResult(boolean valid, String errorCode, String toolCallId) {
+        /**
+         * 创建结构校验成功结果。
+         */
+        static ValidationResult success() {
+            return new ValidationResult(true, null, null);
+        }
+
+        /**
+         * 创建包含稳定错误码和工具调用 ID 的失败结果。
+         */
+        static ValidationResult invalid(String errorCode, String toolCallId) {
+            return new ValidationResult(false, errorCode, toolCallId);
+        }
     }
 
     /**

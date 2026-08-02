@@ -7,7 +7,7 @@ package cn.ayice.veyra.tool.permission;
 public record PermissionRule (
         String source,
         PermissionBehavior ruleBehavior,
-        PermissionRuleValue ruleValue
+        Value ruleValue
 ) {
     /**
      * 权限规则可以产生的允许、询问或拒绝行为。
@@ -97,7 +97,7 @@ public record PermissionRule (
             if (behavior == null) {
                 throw new IllegalStateException("behavior 是必填字段");
             }
-            return new PermissionRule(source, behavior, new PermissionRuleValue(toolName, ruleContent));
+            return new PermissionRule(source, behavior, new Value(toolName, ruleContent));
         }
     }
 
@@ -120,5 +120,11 @@ public record PermissionRule (
      */
     public boolean isToolWideRule() {
         return ruleValue.ruleContent() == null || ruleValue.ruleContent().isBlank();
+    }
+
+    /**
+     * 权限规则限定的工具名和参数匹配内容。
+     */
+    public record Value(String toolName, String ruleContent) {
     }
 }

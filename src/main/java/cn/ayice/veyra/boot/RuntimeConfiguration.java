@@ -2,7 +2,7 @@ package cn.ayice.veyra.boot;
 
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.runtime.RuntimeHost;
-import cn.ayice.veyra.session.SessionRegistry;
+import cn.ayice.veyra.runtime.session.RuntimeSessionRegistry;
 import cn.ayice.veyra.session.SessionService;
 import cn.ayice.veyra.runtime.RunCoordinator;
 import cn.ayice.veyra.control.document.DocumentExportService;
@@ -92,20 +92,20 @@ public class RuntimeConfiguration {
      * 创建负责活动会话恢复和关闭的注册表。
      */
     @Bean(destroyMethod = "close")
-    public SessionRegistry sessionRegistry(
+    public RuntimeSessionRegistry runtimeSessionRegistry(
             TranscriptStore transcriptStore,
             TranscriptRestorer transcriptRestorer,
             SessionRuntimeFactory runtimeFactory
     ) {
-        return new SessionRegistry(transcriptStore, transcriptRestorer, runtimeFactory);
+        return new RuntimeSessionRegistry(transcriptStore, transcriptRestorer, runtimeFactory);
     }
 
     /**
      * 创建运行编排访问会话状态和持久化数据的统一服务入口。
      */
     @Bean
-    public SessionService sessionService(SessionRegistry sessionRegistry) {
-        return new SessionService(sessionRegistry);
+    public SessionService sessionService(TranscriptStore transcriptStore) {
+        return new SessionService(transcriptStore);
     }
 
     /**
@@ -120,8 +120,12 @@ public class RuntimeConfiguration {
      * 创建控制面访问活动运行时的唯一入口。
      */
     @Bean
-    public RuntimeHost runtimeHost(SessionService sessions, RunCoordinator runs) {
-        return new RuntimeHost(sessions, runs);
+    public RuntimeHost runtimeHost(
+            RuntimeSessionRegistry runtimeSessions,
+            SessionService persistedSessions,
+            RunCoordinator runs
+    ) {
+        return new RuntimeHost(runtimeSessions, persistedSessions, runs);
     }
 
     /**

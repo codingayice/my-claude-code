@@ -30,17 +30,17 @@ public final class MemoryRecallService {
     /**
      * 对用户级和项目级候选统一打分，并在数量与字节预算内返回相关记忆。
      */
-    public MemoryRecallResult recall(MemoryRecallQuery query) {
+    public MemoryRecallService.Result recall(MemoryRecallService.Query query) {
         validate(query);
         Set<String> terms = terms(query.userInput());
         if (terms.isEmpty()) {
-            return new MemoryRecallResult(List.of(), 0, false);
+            return new MemoryRecallService.Result(List.of(), 0, false);
         }
 
         List<ScoredMemory> candidates = new ArrayList<>();
-        for (MemoryScope scope : MemoryScope.values()) {
+        for (MemoryEntry.Scope scope : MemoryEntry.Scope.values()) {
             for (MemoryEntry entry : store.list(scope)) {
-                if (entry.activation() != MemoryActivation.RELEVANT || query.excludedIds().contains(entry.id())) {
+                if (entry.activation() != MemoryEntry.Activation.RELEVANT || query.excludedIds().contains(entry.id())) {
                     continue;
                 }
                 int score = score(entry, terms);
@@ -53,7 +53,7 @@ public final class MemoryRecallService {
                 .thenComparing(scored -> scored.entry().updatedAt(), Comparator.reverseOrder())
                 .thenComparing(scored -> scored.entry().id()));
 
-        List<MemoryRecallResult.RecalledMemory> recalled = new ArrayList<>();
+        List<MemoryRecallService.Result.RecalledMemory> recalled = new ArrayList<>();
         int usedBytes = 0;
         boolean truncated = false;
         for (ScoredMemory candidate : candidates) {
@@ -68,7 +68,7 @@ public final class MemoryRecallService {
                 continue;
             }
             int bytes = byteLength(text.text());
-            recalled.add(new MemoryRecallResult.RecalledMemory(
+            recalled.add(new MemoryRecallService.Result.RecalledMemory(
                     candidate.entry(),
                     text.text(),
                     candidate.score(),
@@ -77,7 +77,7 @@ public final class MemoryRecallService {
             usedBytes += bytes;
             truncated |= text.truncated();
         }
-        return new MemoryRecallResult(recalled, usedBytes, truncated);
+        return new MemoryRecallService.Result(recalled, usedBytes, truncated);
     }
 
     /**
@@ -169,9 +169,9 @@ public final class MemoryRecallService {
     /**
      * 在扫描文件前校验召回请求和全部硬预算。
      */
-    private static void validate(MemoryRecallQuery query) {
+    private static void validate(MemoryRecallService.Query query) {
         if (query == null || query.maxItems() <= 0 || query.maxTopicBytes() <= 0 || query.maxTotalBytes() <= 0) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_INVALID_REQUEST, "记忆召回预算必须为正数");
+            throw new MemoryException(MemoryException.Code.MEMORY_INVALID_REQUEST, "记忆召回预算必须为正数");
         }
     }
 
@@ -199,5 +199,35 @@ public final class MemoryRecallService {
      * 字节预算裁剪结果。
      */
     record TruncatedText(String text, boolean truncated) {
+    }
+
+    /**
+     * 一次相关记忆召回请求。
+     */
+    public record Query(
+            String userInput,
+            Set<String> excludedIds,
+            int maxItems,
+            int maxTopicBytes,
+            int maxTotalBytes
+    ) {
+        public Query {
+            excludedIds = excludedIds == null ? Set.of() : Set.copyOf(excludedIds);
+        }
+    }
+
+    /**
+     * 一次确定性召回结果。
+     */
+    public record Result(List<RecalledMemory> memories, int usedBytes, boolean truncated) {
+        public Result {
+            memories = memories == null ? List.of() : List.copyOf(memories);
+        }
+
+        /**
+         * 单条已召回记忆及其预算内正文。
+         */
+        public record RecalledMemory(MemoryEntry entry, String content, int score, boolean truncated) {
+        }
     }
 }

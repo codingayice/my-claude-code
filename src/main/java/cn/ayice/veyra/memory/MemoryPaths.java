@@ -52,9 +52,9 @@ public final class MemoryPaths {
     /**
      * 返回指定作用域的命名空间目录。
      */
-    public Path namespace(MemoryScope scope) {
+    public Path namespace(MemoryEntry.Scope scope) {
         Objects.requireNonNull(scope, "scope");
-        return scope == MemoryScope.USER
+        return scope == MemoryEntry.Scope.USER
                 ? root.resolve("user")
                 : root.resolve("projects").resolve(projectKey);
     }
@@ -62,25 +62,25 @@ public final class MemoryPaths {
     /**
      * 返回指定作用域的 topic 目录。
      */
-    public Path topics(MemoryScope scope) {
+    public Path topics(MemoryEntry.Scope scope) {
         return namespace(scope).resolve("topics");
     }
 
     /**
      * 返回指定作用域的派生索引路径。
      */
-    public Path index(MemoryScope scope) {
+    public Path index(MemoryEntry.Scope scope) {
         return namespace(scope).resolve(INDEX_FILE);
     }
 
     /**
      * 根据稳定 id 返回 topic 文件路径，并拒绝路径穿越字符。
      */
-    public Path topic(MemoryScope scope, String id) {
+    public Path topic(MemoryEntry.Scope scope, String id) {
         String validId = validateId(id);
         Path topic = topics(scope).resolve(validId + ".md").normalize();
         if (!topic.startsWith(topics(scope).normalize())) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_INVALID_REQUEST, "记忆标识越过允许目录");
+            throw new MemoryException(MemoryException.Code.MEMORY_INVALID_REQUEST, "记忆标识越过允许目录");
         }
         return topic;
     }
@@ -101,7 +101,7 @@ public final class MemoryPaths {
     public String validateId(String id) {
         String value = Objects.requireNonNullElse(id, "").trim().toLowerCase(Locale.ROOT);
         if (!value.matches("[a-z0-9][a-z0-9_-]{0,127}")) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_INVALID_REQUEST, "记忆标识格式不合法");
+            throw new MemoryException(MemoryException.Code.MEMORY_INVALID_REQUEST, "记忆标识格式不合法");
         }
         return value;
     }
@@ -125,7 +125,7 @@ public final class MemoryPaths {
      */
     private static Path validateRoot(Path root) {
         if (root.getParent() == null) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_INVALID_REQUEST, "长期记忆目录不能是文件系统根目录");
+            throw new MemoryException(MemoryException.Code.MEMORY_INVALID_REQUEST, "长期记忆目录不能是文件系统根目录");
         }
         return root;
     }

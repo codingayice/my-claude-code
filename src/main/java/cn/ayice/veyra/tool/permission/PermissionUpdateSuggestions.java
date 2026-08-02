@@ -22,38 +22,40 @@ public final class PermissionUpdateSuggestions {
     /**
      * 根据已批准调用生成仅在当前会话生效的最小权限更新。
      */
-    public static List<PermissionUpdate> generateForSessionAllow(
+    public static List<PermissionContextStore.Update> generateForSessionAllow(
             ToolExecutionRequest request,
             PermissionContext context
     ) {
         if (context == null) {
-            return List.of(PermissionUpdate.addRule(buildAllowRule(request, null)));
+            return List.of(PermissionContextStore.Update.addRule(buildAllowRule(request, null)));
         }
         if (isWriteTool(request.name())) {
             return generateWriteSessionUpdates(request, context);
         }
         if (isReadTool(request.name())) {
             PermissionRule rule = buildReadAllowRule(request, context.workingDir());
-            return rule == null ? List.of(PermissionUpdate.addRule(buildAllowRule(request, context.workingDir()))) : List.of(PermissionUpdate.addRule(rule));
+            return rule == null
+                    ? List.of(PermissionContextStore.Update.addRule(buildAllowRule(request, context.workingDir())))
+                    : List.of(PermissionContextStore.Update.addRule(rule));
         }
-        return List.of(PermissionUpdate.addRule(buildAllowRule(request, context.workingDir())));
+        return List.of(PermissionContextStore.Update.addRule(buildAllowRule(request, context.workingDir())));
     }
 
     /**
      * 为写工具生成目标目录和必要读取权限的会话更新。
      */
-    private static List<PermissionUpdate> generateWriteSessionUpdates(
+    private static List<PermissionContextStore.Update> generateWriteSessionUpdates(
             ToolExecutionRequest request,
             PermissionContext context
     ) {
-        List<PermissionUpdate> updates = new ArrayList<>();
-        updates.add(PermissionUpdate.addRule(buildAllowRule(request, context.workingDir())));
+        List<PermissionContextStore.Update> updates = new ArrayList<>();
+        updates.add(PermissionContextStore.Update.addRule(buildAllowRule(request, context.workingDir())));
 
         Path targetPath = extractFilePath(request.arguments(), context.workingDir());
         if (targetPath != null && !context.isWithinAllowedDirectories(targetPath)) {
             Path targetDirectory = targetPath.getParent();
             if (targetDirectory != null) {
-                updates.add(PermissionUpdate.addDirectory(targetDirectory));
+                updates.add(PermissionContextStore.Update.addDirectory(targetDirectory));
             }
         }
         return updates;

@@ -1,5 +1,6 @@
 package cn.ayice.veyra.memory;
 
+import cn.ayice.veyra.memory.MemoryEntry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,15 +26,15 @@ class MemoryPathsTest {
 
         assertTrue(firstPaths.projectKey().startsWith("workspace-"));
         assertNotEquals(firstPaths.projectKey(), secondPaths.projectKey());
-        assertNotEquals(firstPaths.namespace(MemoryScope.PROJECT), secondPaths.namespace(MemoryScope.PROJECT));
+        assertNotEquals(firstPaths.namespace(MemoryEntry.Scope.PROJECT), secondPaths.namespace(MemoryEntry.Scope.PROJECT));
     }
 
     @Test
     void topicRejectsTraversalAndAbsoluteIdentifiers() {
         MemoryPaths paths = new MemoryPaths(tempDir.resolve("memory").toString(), tempDir.toString());
 
-        assertThrows(MemoryException.class, () -> paths.topic(MemoryScope.USER, "../secret"));
-        assertThrows(MemoryException.class, () -> paths.topic(MemoryScope.USER, "C:\\secret"));
-        assertThrows(MemoryException.class, () -> paths.topic(MemoryScope.USER, "topic/name"));
+        assertThrows(MemoryException.class, () -> paths.topic(MemoryEntry.Scope.USER, "../secret"));
+        assertThrows(MemoryException.class, () -> paths.topic(MemoryEntry.Scope.USER, "C:\\secret"));
+        assertThrows(MemoryException.class, () -> paths.topic(MemoryEntry.Scope.USER, "topic/name"));
     }
 }

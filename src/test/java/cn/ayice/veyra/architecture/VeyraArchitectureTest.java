@@ -48,6 +48,24 @@ class VeyraArchitectureTest {
             );
 
     @ArchTest
+    static final ArchRule context_does_not_depend_on_compaction = noClasses()
+            .that().resideInAnyPackage("cn.ayice.veyra.context..")
+            .should().dependOnClassesThat().resideInAnyPackage("cn.ayice.veyra.compaction..");
+
+    @ArchTest
+    static final ArchRule memory_does_not_depend_on_runtime_or_subagent = noClasses()
+            .that().resideInAnyPackage("cn.ayice.veyra.memory..")
+            .should().dependOnClassesThat().resideInAnyPackage(
+                    "cn.ayice.veyra.runtime..",
+                    "cn.ayice.veyra.subagent.."
+            );
+
+    @ArchTest
+    static final ArchRule persisted_session_module_does_not_depend_on_runtime = noClasses()
+            .that().resideInAnyPackage("cn.ayice.veyra.session..")
+            .should().dependOnClassesThat().resideInAnyPackage("cn.ayice.veyra.runtime..");
+
+    @ArchTest
     static final ArchRule harness_modules_do_not_depend_on_control_boot_server_or_spring = noClasses()
             .that().resideInAnyPackage(
                     "cn.ayice.veyra.session..",

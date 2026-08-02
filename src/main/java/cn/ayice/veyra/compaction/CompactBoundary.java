@@ -2,8 +2,6 @@ package cn.ayice.veyra.compaction;
 
 
 import cn.ayice.veyra.context.TokenEstimator;
-import cn.ayice.veyra.context.prompt.SystemPromptRegistry;
-import cn.ayice.veyra.llm.AIService;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 

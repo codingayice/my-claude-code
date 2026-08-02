@@ -1,8 +1,8 @@
 package cn.ayice.veyra.runtime.agent;
 
-import cn.ayice.veyra.context.ContextBudgetService;
+import cn.ayice.veyra.compaction.CompactionService;
 import cn.ayice.veyra.context.WorkingMessage;
-import cn.ayice.veyra.compaction.StableHistorySnapshot;
+import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -33,7 +33,7 @@ public final class LoopState {
     private ChatRequest request;
     private AiMessage aiMessage;
     private List<ToolExecutionRequest> approvedRequests;
-    private ContextBudgetService.CapacityState capacityState;
+    private CompactionService.CapacityState capacityState;
 
     private LoopState(
             List<WorkingMessage> messages,
@@ -46,7 +46,7 @@ public final class LoopState {
             ChatRequest request,
             AiMessage aiMessage,
             List<ToolExecutionRequest> approvedRequests,
-            ContextBudgetService.CapacityState capacityState
+            CompactionService.CapacityState capacityState
     ) {
         this.messages = new ArrayList<>(messages);
         this.nextSequence = nextSequence;
@@ -104,14 +104,14 @@ public final class LoopState {
     /**
      * 返回最近一次完整模型请求的容量状态。
      */
-    public ContextBudgetService.CapacityState capacityState() {
+    public CompactionService.CapacityState capacityState() {
         return capacityState;
     }
 
     /**
      * 更新最近容量判断并返回当前状态对象。
      */
-    public LoopState withCapacityState(ContextBudgetService.CapacityState capacityState) {
+    public LoopState withCapacityState(CompactionService.CapacityState capacityState) {
         this.capacityState = capacityState;
         return this;
     }
@@ -143,11 +143,11 @@ public final class LoopState {
     /**
      * 用当前稳定上界和工作历史创建后台摘要不可变快照。
      */
-    public StableHistorySnapshot stableSnapshot() {
+    public BackgroundSummaryScheduler.Snapshot stableSnapshot() {
         if (currentStableSequence <= 0) {
             throw new IllegalStateException("no stable original message is available");
         }
-        return new StableHistorySnapshot(currentStableSequence, messages);
+        return new BackgroundSummaryScheduler.Snapshot(currentStableSequence, messages);
     }
 
     /**

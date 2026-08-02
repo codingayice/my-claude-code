@@ -1,15 +1,15 @@
 package cn.ayice.veyra.memory.tool;
 
-import cn.ayice.veyra.memory.ForgetMemoryCommand;
-import cn.ayice.veyra.memory.MemoryActivation;
+import cn.ayice.veyra.memory.MemoryService.Forget;
+import cn.ayice.veyra.memory.MemoryEntry.Activation;
 import cn.ayice.veyra.memory.MemoryEntry;
 import cn.ayice.veyra.memory.MemoryException;
-import cn.ayice.veyra.memory.MemoryIndexEntry;
-import cn.ayice.veyra.memory.MemoryOperationResult;
-import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryService.IndexEntry;
+import cn.ayice.veyra.memory.MemoryService.Operation;
+import cn.ayice.veyra.memory.MemoryEntry.Scope;
 import cn.ayice.veyra.memory.MemoryService;
-import cn.ayice.veyra.memory.MemoryType;
-import cn.ayice.veyra.memory.RememberMemoryCommand;
+import cn.ayice.veyra.memory.MemoryEntry.Type;
+import cn.ayice.veyra.memory.MemoryService.Remember;
 import cn.ayice.veyra.tool.BaseTool;
 import cn.ayice.veyra.tool.ToolResult;
 import cn.ayice.veyra.tool.ValidationResult;
@@ -105,7 +105,7 @@ public final class MemoryTool extends BaseTool {
             if (!List.of("remember", "forget", "list", "show").contains(action)) {
                 return ValidationResult.invalid("action 必须是 remember、forget、list 或 show");
             }
-            parseEnum(MemoryScope.class, text(root, "scope"), "scope");
+            parseEnum(MemoryEntry.Scope.class, text(root, "scope"), "scope");
             return ValidationResult.ok();
         } catch (Exception error) {
             return ValidationResult.invalid("Memory 参数不合法: " + error.getMessage());
@@ -120,10 +120,10 @@ public final class MemoryTool extends BaseTool {
         try {
             JsonNode root = OBJECT_MAPPER.readTree(arguments == null ? "{}" : arguments);
             String action = text(root, "action");
-            MemoryScope scope = parseEnum(MemoryScope.class, text(root, "scope"), "scope");
+            MemoryEntry.Scope scope = parseEnum(MemoryEntry.Scope.class, text(root, "scope"), "scope");
             return switch (action) {
                 case "remember" -> remember(root, scope);
-                case "forget" -> operation(memoryService.forget(new ForgetMemoryCommand(scope, text(root, "id"))));
+                case "forget" -> operation(memoryService.forget(new MemoryService.Forget(scope, text(root, "id"))));
                 case "list" -> ToolResult.success(formatList(memoryService.list(scope)));
                 case "show" -> ToolResult.success(formatEntry(memoryService.show(scope, text(root, "id"))));
                 default -> ToolResult.error("不支持的 Memory action: " + action);
@@ -161,12 +161,12 @@ public final class MemoryTool extends BaseTool {
     /**
      * 解析 remember 专用字段并委托统一服务持久化。
      */
-    private ToolResult remember(JsonNode root, MemoryScope scope) {
-        MemoryOperationResult result = memoryService.remember(new RememberMemoryCommand(
+    private ToolResult remember(JsonNode root, MemoryEntry.Scope scope) {
+        MemoryService.Operation result = memoryService.remember(new MemoryService.Remember(
                 optionalText(root, "id"),
                 scope,
-                parseEnum(MemoryType.class, text(root, "type"), "type"),
-                parseEnum(MemoryActivation.class, text(root, "activation"), "activation"),
+                parseEnum(MemoryEntry.Type.class, text(root, "type"), "type"),
+                parseEnum(MemoryEntry.Activation.class, text(root, "activation"), "activation"),
                 text(root, "name"),
                 text(root, "description"),
                 text(root, "content"),
@@ -178,7 +178,7 @@ public final class MemoryTool extends BaseTool {
     /**
      * 将统一操作结果转换为模型可判断的稳定文本。
      */
-    private static ToolResult operation(MemoryOperationResult result) {
+    private static ToolResult operation(MemoryService.Operation result) {
         if (!result.success()) {
             String code = result.errorCode() == null ? "MEMORY_OPERATION_FAILED" : result.errorCode().name();
             return ToolResult.error(code + ": " + result.message());
@@ -190,7 +190,7 @@ public final class MemoryTool extends BaseTool {
     /**
      * 将索引列表格式化为紧凑、可读的工具结果。
      */
-    private static String formatList(List<MemoryIndexEntry> entries) {
+    private static String formatList(List<MemoryService.IndexEntry> entries) {
         if (entries.isEmpty()) {
             return "没有长期记忆";
         }

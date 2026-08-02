@@ -4,10 +4,12 @@ import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionDecision;
 import cn.ayice.veyra.tool.permission.PermissionMode;
-import cn.ayice.veyra.tool.permission.AgentPermissionPolicy;
+import cn.ayice.veyra.subagent.AgentProfile.PermissionPolicy;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.BaseTool;
-import cn.ayice.veyra.tool.ToolDispatcher;
+import cn.ayice.veyra.tool.ToolService.Authorization;
+import cn.ayice.veyra.tool.ToolService.Execution;
+import cn.ayice.veyra.tool.state.FileStateCache;
 import cn.ayice.veyra.tool.ToolResult;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
@@ -37,13 +39,13 @@ class ToolServiceTest {
         List<String> lifecycle = new ArrayList<>();
         ToolExecutionRequest request = request("bash", "{\"command\":\"git status\"}");
 
-        ToolAuthorization authorization = engine.authorize(
+        Authorization authorization = engine.authorize(
                 request,
                 store.current(),
                 ToolExecutionPolicy.mainAgent(),
                 observer(lifecycle)
         );
-        ToolExecution execution = engine.execute(
+        Execution execution = engine.execute(
                 authorization,
                 authorization.context(),
                 ToolExecutionPolicy.mainAgent()
@@ -63,16 +65,16 @@ class ToolServiceTest {
         PermissionContext context = context(PermissionMode.AUTO_APPROVE);
         ToolService engine = engine(tool, null, new PermissionContextStore(context));
 
-        ToolAuthorization mainAuthorization = engine.authorize(
+        Authorization mainAuthorization = engine.authorize(
                 request,
                 context,
                 ToolExecutionPolicy.mainAgent(),
                 ToolExecutionObserver.NOOP
         );
-        ToolAuthorization subagentAuthorization = engine.authorize(
+        Authorization subagentAuthorization = engine.authorize(
                 request,
                 context,
-                AgentPermissionPolicy.general(),
+                PermissionPolicy.general(),
                 ToolExecutionObserver.NOOP
         );
 
@@ -82,7 +84,7 @@ class ToolServiceTest {
         );
         assertEquals(
                 "<success>工具已成功执行</success>",
-                engine.execute(subagentAuthorization, context, AgentPermissionPolicy.general()).content()
+                engine.execute(subagentAuthorization, context, PermissionPolicy.general()).content()
         );
     }
 
@@ -94,7 +96,7 @@ class ToolServiceTest {
                 new PermissionContextStore(context(PermissionMode.ASK_EVERY_TIME))
         );
 
-        ToolAuthorization authorization = engine.authorize(
+        Authorization authorization = engine.authorize(
                 request("Write", "{}"),
                 context(PermissionMode.ASK_EVERY_TIME),
                 ToolExecutionPolicy.mainAgent(),
@@ -110,9 +112,8 @@ class ToolServiceTest {
             ToolExecutionConfirmation confirmation,
             PermissionContextStore store
     ) {
-        ToolDispatcher dispatcher = new ToolDispatcher();
-        dispatcher.register(tool);
-        return new ToolService(dispatcher, confirmation, store);
+        ToolCatalog catalog = ToolCatalog.create(List.of(tool), new FileStateCache());
+        return new ToolService(catalog, confirmation, store);
     }
 
     private PermissionContext context(PermissionMode mode) {

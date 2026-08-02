@@ -1,18 +1,14 @@
 package cn.ayice.veyra.compaction;
 
 import cn.ayice.veyra.config.AppConfig;
-import cn.ayice.veyra.context.ContextBudgetService;
 import cn.ayice.veyra.context.ContextService;
-import cn.ayice.veyra.context.FinalRequestValidator;
 import cn.ayice.veyra.context.WorkingMessage;
-import cn.ayice.veyra.compaction.AutoCompactConfig;
-import cn.ayice.veyra.compaction.CheckpointCandidate;
-import cn.ayice.veyra.compaction.CompactStrategy;
-import cn.ayice.veyra.compaction.CompactTrigger;
-import cn.ayice.veyra.compaction.ConversationChunker;
-import cn.ayice.veyra.compaction.LlmSummaryCompactor;
+import cn.ayice.veyra.compaction.CompactionConfig;
+import cn.ayice.veyra.compaction.CheckpointState.Candidate;
+import cn.ayice.veyra.compaction.CompactionService.Strategy;
+import cn.ayice.veyra.compaction.CompactionService.Trigger;
 import cn.ayice.veyra.compaction.MicroCompactor;
-import cn.ayice.veyra.compaction.SessionCheckpointState;
+import cn.ayice.veyra.compaction.CheckpointState;
 import cn.ayice.veyra.llm.AIService;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import dev.langchain4j.data.message.AiMessage;
@@ -35,9 +31,9 @@ class CompactionServiceTest {
 
     @Test
     void autoUsesCommittedSessionSummaryBeforeCallingLlmSummary() {
-        AutoCompactConfig config = new AutoCompactConfig(14_500, 1, true, true, null, true);
-        SessionCheckpointState checkpointState = new SessionCheckpointState();
-        checkpointState.commit(new CheckpointCandidate("checkpoint summary", 1));
+        CompactionConfig config = new CompactionConfig(14_500, 1, true, true, null, true);
+        CheckpointState checkpointState = new CheckpointState();
+        checkpointState.commit(new CheckpointState.Candidate("checkpoint summary", 1));
         StubAIService ai = new StubAIService("unused");
         CompactionService preparer = preparer(config, checkpointState, ai, new FileStateCache());
         List<WorkingMessage> history = List.of(
@@ -47,12 +43,12 @@ class CompactionServiceTest {
 
         CompactionService.PreparedWorkingTurn prepared = preparer.prepareWorking(
                 history,
-                CompactTrigger.AUTO,
+                CompactionService.Trigger.AUTO,
                 1,
                 Path.of(".")
         );
 
-        assertEquals(CompactStrategy.SESSION_SUMMARY, prepared.strategy());
+        assertEquals(CompactionService.Strategy.SESSION_SUMMARY, prepared.strategy());
         assertEquals(0, ai.calls);
         assertTrue(prepared.request().messages().toString().contains("checkpoint summary"));
         assertTrue(prepared.request().messages().toString().contains("current request"));
@@ -61,8 +57,8 @@ class CompactionServiceTest {
 
     @Test
     void manualCompactionRunsBelowThresholdAndCommitsValidatedCandidate() {
-        AutoCompactConfig config = new AutoCompactConfig(1_000_000, 4_096, true, true, null, true);
-        SessionCheckpointState checkpointState = new SessionCheckpointState();
+        CompactionConfig config = new CompactionConfig(1_000_000, 4_096, true, true, null, true);
+        CheckpointState checkpointState = new CheckpointState();
         StubAIService ai = new StubAIService("manual summary");
         FileStateCache fileStateCache = new FileStateCache();
         Path modified = Path.of("modified.txt").toAbsolutePath().normalize();
@@ -75,12 +71,12 @@ class CompactionServiceTest {
 
         CompactionService.PreparedWorkingTurn prepared = preparer.prepareWorking(
                 history,
-                CompactTrigger.MANUAL,
+                CompactionService.Trigger.MANUAL,
                 0,
                 Path.of(".")
         );
 
-        assertEquals(CompactStrategy.LLM_SUMMARY, prepared.strategy());
+        assertEquals(CompactionService.Strategy.LLM_SUMMARY, prepared.strategy());
         assertEquals(1, ai.calls);
         assertEquals(2, checkpointState.current().orElseThrow().coveredSequence());
         assertTrue(prepared.request().messages().toString().contains("context-restoration"));
@@ -88,8 +84,8 @@ class CompactionServiceTest {
     }
 
     private static CompactionService preparer(
-            AutoCompactConfig config,
-            SessionCheckpointState checkpointState,
+            CompactionConfig config,
+            CheckpointState checkpointState,
             StubAIService ai,
             FileStateCache fileStateCache
     ) {
@@ -97,23 +93,21 @@ class CompactionServiceTest {
         return new CompactionService(
                 contextBuilder,
                 config,
-                new ContextBudgetService(config),
                 new MicroCompactor(),
                 checkpointState,
-                new LlmSummaryCompactor(ai, new ConversationChunker()),
-                new FinalRequestValidator(),
+                new SummaryCompactor(ai),
                 fileStateCache::recentModifiedPaths
         );
     }
 
     private static final class MinimalContextService extends ContextService {
-        private MinimalContextService(AutoCompactConfig config) {
+        private MinimalContextService(CompactionConfig config) {
             super(
                     List.of(),
                     Map.of(),
                     new AppConfig("__missing_agent_turn_preparer_enhanced_test_config__.yaml"),
                     null,
-                    config
+                    config.contextTokenBudget()
             );
         }
 

@@ -1,6 +1,6 @@
 package cn.ayice.veyra.interaction.command;
 
-import cn.ayice.veyra.memory.MemoryExtractionStatus;
+import cn.ayice.veyra.runtime.MemoryExtractionCoordinator.Status;
 import cn.ayice.veyra.memory.MemoryService;
 
 import java.util.Objects;
@@ -19,7 +19,7 @@ public final class SlashCommands {
      */
     public static SlashCommandDispatcher builtIns(
             MemoryService memoryService,
-            Supplier<MemoryExtractionStatus> extractionStatus,
+            Supplier<Status> extractionStatus,
             Supplier<String> compactOperation,
             Supplier<String> compactStatus
     ) {

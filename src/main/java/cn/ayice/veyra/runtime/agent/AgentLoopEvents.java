@@ -1,7 +1,8 @@
 package cn.ayice.veyra.runtime.agent;
 
-import cn.ayice.veyra.compaction.AutoCompactConfig;
-import cn.ayice.veyra.compaction.CompactTrigger;
+import cn.ayice.veyra.compaction.CompactionConfig;
+import cn.ayice.veyra.compaction.CompactionService;
+import cn.ayice.veyra.compaction.CompactionService.Trigger;
 import cn.ayice.veyra.compaction.CompactionService.PreparedWorkingTurn;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.tool.ToolResult;
@@ -113,7 +114,7 @@ class AgentLoopEvents {
     /**
      * 在 token 接近限制时发布上下文容量告警。
      */
-    void contextWarning(AutoCompactConfig.TokenState state, AutoCompactConfig config, String phase) {
+    void contextWarning(CompactionConfig.TokenState state, CompactionConfig config, String phase) {
         emit("context.warning",
                 "phase", phase,
                 "tokenCount", state.tokenCount(),
@@ -131,7 +132,7 @@ class AgentLoopEvents {
     /**
      * 发布每次最终请求的完整输入 token 和容量区间。
      */
-    void contextUsage(PreparedWorkingTurn prepared, AutoCompactConfig config) {
+    void contextUsage(PreparedWorkingTurn prepared, CompactionConfig config) {
         emit("context.usage",
                 "inputTokens", prepared.inputTokens(),
                 "effectiveWindow", config.effectiveWindow(),
@@ -142,7 +143,7 @@ class AgentLoopEvents {
     /**
      * 发布一次前台压缩成功后的策略、预算变化和 checkpoint 版本。
      */
-    void compactionCompleted(CompactTrigger trigger, PreparedWorkingTurn prepared, long durationMs) {
+    void compactionCompleted(CompactionService.Trigger trigger, PreparedWorkingTurn prepared, long durationMs) {
         emit("compaction.completed",
                 "trigger", trigger,
                 "strategy", prepared.strategy(),
@@ -158,7 +159,7 @@ class AgentLoopEvents {
     /**
      * 发布前台压缩阻止模型请求时的稳定错误码和耗时。
      */
-    void compactionFailed(CompactTrigger trigger, String errorCode, long durationMs) {
+    void compactionFailed(CompactionService.Trigger trigger, String errorCode, long durationMs) {
         emit("compaction.failed",
                 "trigger", trigger,
                 "errorCode", errorCode,
@@ -169,7 +170,7 @@ class AgentLoopEvents {
     /**
      * 发布手动或自动压缩没有找到可替换旧回合时的原因。
      */
-    void compactionSkipped(CompactTrigger trigger, String reason) {
+    void compactionSkipped(CompactionService.Trigger trigger, String reason) {
         emit("compaction.skipped", "trigger", trigger, "reason", reason);
     }
 

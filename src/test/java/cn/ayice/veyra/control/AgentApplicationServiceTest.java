@@ -3,7 +3,7 @@ package cn.ayice.veyra.control;
 import cn.ayice.veyra.boot.SessionRuntimeFactory;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.runtime.RuntimeHost;
-import cn.ayice.veyra.session.SessionRegistry;
+import cn.ayice.veyra.runtime.session.RuntimeSessionRegistry;
 import cn.ayice.veyra.session.SessionService;
 import cn.ayice.veyra.runtime.RunCoordinator;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
@@ -34,8 +34,8 @@ class AgentApplicationServiceTest {
         );
         SessionRuntimeFactory factory = new SessionRuntimeFactory(
                 config, store, Runnable::run, Runnable::run, Runnable::run);
-        SessionRegistry sessions = new SessionRegistry(store, new TranscriptRestorer(), factory);
-        RuntimeHost runtimeHost = new RuntimeHost(new SessionService(sessions), new RunCoordinator());
+        RuntimeSessionRegistry sessions = new RuntimeSessionRegistry(store, new TranscriptRestorer(), factory);
+        RuntimeHost runtimeHost = new RuntimeHost(sessions, new SessionService(store), new RunCoordinator());
         AgentApplicationService application = new AgentApplicationService(runtimeHost);
 
         try (sessions) {

@@ -1,6 +1,6 @@
 package cn.ayice.veyra.runtime.agent;
 
-import cn.ayice.veyra.compaction.AutoCompactConfig;
+import cn.ayice.veyra.compaction.CompactionConfig;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.tool.ToolResult;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -36,7 +36,7 @@ class AgentLoopEventsTest {
     void contextWarningCarriesBackendTokenStateAndThresholdsOnly() {
         RecordingSink sink = new RecordingSink();
         AgentLoopEvents events = new AgentLoopEvents(sink);
-        AutoCompactConfig config = new AutoCompactConfig(128_000, 4_096, true, true, null, true);
+        CompactionConfig config = new CompactionConfig(128_000, 4_096, true, true, null, true);
 
         events.contextWarning(config.evaluate(config.threshold()), config, "request");
 

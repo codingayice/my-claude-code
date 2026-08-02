@@ -1,25 +1,22 @@
 package cn.ayice.veyra.runtime.agent;
 
-import cn.ayice.veyra.context.ContextBudgetService;
 import cn.ayice.veyra.context.ContextService;
-import cn.ayice.veyra.context.FinalRequestValidator;
 import cn.ayice.veyra.context.WorkingMessage;
-import cn.ayice.veyra.compaction.AutoCompactConfig;
+import cn.ayice.veyra.compaction.CompactionConfig;
 import cn.ayice.veyra.compaction.CompactBoundary;
-import cn.ayice.veyra.compaction.CompactStrategy;
-import cn.ayice.veyra.compaction.CompactTrigger;
+import cn.ayice.veyra.compaction.CompactionService.Strategy;
+import cn.ayice.veyra.compaction.CompactionService.Trigger;
 import cn.ayice.veyra.compaction.CompactionService;
-import cn.ayice.veyra.compaction.ConversationChunker;
-import cn.ayice.veyra.compaction.LlmSummaryCompactor;
+import cn.ayice.veyra.compaction.SummaryCompactor;
 import cn.ayice.veyra.compaction.MicroCompactor;
-import cn.ayice.veyra.compaction.SessionCheckpointState;
-import cn.ayice.veyra.compaction.SessionSummaryCoordinator;
+import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
 import cn.ayice.veyra.session.persistence.TranscriptRecorder;
 import cn.ayice.veyra.session.event.AgentEventSink;
-import cn.ayice.veyra.memory.extraction.MemoryExtractionCoordinator;
+import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.runtime.model.ModelCallExecutor;
 import cn.ayice.veyra.llm.AIService;
-import cn.ayice.veyra.tool.ToolDispatcher;
+import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.tool.ToolService;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.permission.PermissionContext;
@@ -59,10 +56,10 @@ public class AgentLoop {
     private final BackgroundManager bgManager;
     private final SubagentService subagentService;
     private final AgentLoopEvents events;
-    private final AutoCompactConfig compactConfig;
+    private final CompactionConfig compactConfig;
     private final int maxRounds;
-    private final SessionSummaryCoordinator sessionSummaryCoordinator;
-    private final SessionCheckpointState checkpointState;
+    private final BackgroundSummaryScheduler sessionSummaryCoordinator;
+    private final CheckpointState checkpointState;
     private final MemoryExtractionCoordinator memoryExtractionCoordinator;
     private final long modelCallTimeoutMs;
     private final TranscriptRecorder transcriptRecorder;
@@ -75,18 +72,18 @@ public class AgentLoop {
 
     public AgentLoop(
             AIService ai,
-            ToolDispatcher tools,
+            ToolCatalog tools,
             ContextService contextBuilder,
             BackgroundManager bgManager,
             ToolExecutionConfirmation confirmation,
             PermissionContextStore permissionContextStore,
             TodoManager todoManager,
-            AutoCompactConfig compactConfig,
+            CompactionConfig compactConfig,
             int maxRounds,
             SubagentService subagentService,
             AgentEventSink eventSink,
-            SessionCheckpointState checkpointState,
-            SessionSummaryCoordinator sessionSummaryCoordinator,
+            CheckpointState checkpointState,
+            BackgroundSummaryScheduler sessionSummaryCoordinator,
             FileStateCache fileStateCache,
             long modelCallTimeoutMs,
             MemoryExtractionCoordinator memoryExtractionCoordinator,
@@ -103,11 +100,9 @@ public class AgentLoop {
         this.turnPreparer = new CompactionService(
                 contextBuilder,
                 compactConfig,
-                new ContextBudgetService(compactConfig),
                 new MicroCompactor(),
                 checkpointState,
-                new LlmSummaryCompactor(ai, new ConversationChunker()),
-                new FinalRequestValidator(),
+                new SummaryCompactor(ai),
                 fileStateCache::recentModifiedPaths
         );
         this.ai = ai;
@@ -196,13 +191,13 @@ public class AgentLoop {
             try {
                 prepared = turnPreparer.prepareWorking(
                         state.messages(),
-                        CompactTrigger.AUTO,
+                        CompactionService.Trigger.AUTO,
                         completedModelRounds,
                         permissionContext.workingDir()
                 );
             } catch (CompactionService.PreparationException preparationFailure) {
                 events.compactionFailed(
-                        CompactTrigger.AUTO,
+                        CompactionService.Trigger.AUTO,
                         preparationFailure.errorCode(),
                         System.currentTimeMillis() - prepareStartedAt
                 );
@@ -223,9 +218,9 @@ public class AgentLoop {
                     .withRequest(prepared.request())
                     .markStable();
             events.contextUsage(prepared, compactConfig);
-            if (prepared.strategy() != CompactStrategy.NONE) {
+            if (prepared.strategy() != CompactionService.Strategy.NONE) {
                 events.compactionCompleted(
-                        CompactTrigger.AUTO,
+                        CompactionService.Trigger.AUTO,
                         prepared,
                         System.currentTimeMillis() - prepareStartedAt
                 );
@@ -251,7 +246,7 @@ public class AgentLoop {
                     try {
                         CompactionService.PreparedWorkingTurn reactive = turnPreparer.prepareWorking(
                                 state.messages(),
-                                CompactTrigger.REACTIVE,
+                                CompactionService.Trigger.REACTIVE,
                                 completedModelRounds,
                                 permissionContext.workingDir()
                         );
@@ -261,9 +256,9 @@ public class AgentLoop {
                                 .withState(LoopState.ACTIVE, "prompt_too_long_compacted")
                                 .markStable();
                         events.contextUsage(reactive, compactConfig);
-                        if (reactive.strategy() != CompactStrategy.NONE) {
+                        if (reactive.strategy() != CompactionService.Strategy.NONE) {
                             events.compactionCompleted(
-                                    CompactTrigger.REACTIVE,
+                                    CompactionService.Trigger.REACTIVE,
                                     reactive,
                                     System.currentTimeMillis() - reactiveStartedAt
                             );
@@ -271,7 +266,7 @@ public class AgentLoop {
                         continue;
                     } catch (CompactionService.PreparationException reactiveFailure) {
                         events.compactionFailed(
-                                CompactTrigger.REACTIVE,
+                                CompactionService.Trigger.REACTIVE,
                                 reactiveFailure.errorCode(),
                                 System.currentTimeMillis() - reactiveStartedAt
                         );
@@ -406,18 +401,18 @@ public class AgentLoop {
         try {
             CompactionService.PreparedWorkingTurn prepared = turnPreparer.prepareWorking(
                     history,
-                    CompactTrigger.MANUAL,
+                    CompactionService.Trigger.MANUAL,
                     0,
                     permissionContextStore.current().workingDir()
             );
             events.contextUsage(prepared, compactConfig);
-            if (prepared.strategy() == CompactStrategy.NONE) {
-                events.compactionSkipped(CompactTrigger.MANUAL, "NO_COMPACTABLE_HISTORY");
+            if (prepared.strategy() == CompactionService.Strategy.NONE) {
+                events.compactionSkipped(CompactionService.Trigger.MANUAL, "NO_COMPACTABLE_HISTORY");
                 return "当前没有可压缩内容";
             }
             history = prepared.messages();
             events.compactionCompleted(
-                    CompactTrigger.MANUAL,
+                    CompactionService.Trigger.MANUAL,
                     prepared,
                     System.currentTimeMillis() - startedAt
             );
@@ -446,7 +441,7 @@ public class AgentLoop {
             ).trim();
         } catch (CompactionService.PreparationException failure) {
             events.compactionFailed(
-                    CompactTrigger.MANUAL,
+                    CompactionService.Trigger.MANUAL,
                     failure.errorCode(),
                     System.currentTimeMillis() - startedAt
             );

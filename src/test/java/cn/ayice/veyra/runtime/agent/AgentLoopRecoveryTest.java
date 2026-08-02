@@ -1,6 +1,6 @@
 package cn.ayice.veyra.runtime.agent;
 
-import cn.ayice.veyra.compaction.AutoCompactConfig;
+import cn.ayice.veyra.compaction.CompactionConfig;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.llm.AIService;
@@ -9,11 +9,10 @@ import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionMode;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.session.persistence.TranscriptRecorder;
-import cn.ayice.veyra.tool.ToolDispatcher;
-import cn.ayice.veyra.tool.ToolRegistry;
+import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.state.TodoManager;
-import cn.ayice.veyra.compaction.SessionCheckpointState;
+import cn.ayice.veyra.compaction.CheckpointState;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
@@ -128,13 +127,13 @@ class AgentLoopRecoveryTest {
             TranscriptRecorder transcriptRecorder
     ) {
         AppConfig config = new AppConfig("__missing_agent_loop_recovery_test_config__.yaml");
-        ToolRegistry registry = new ToolRegistry();
-        AutoCompactConfig compactConfig = new AutoCompactConfig(1_013_000, 4096, true, true, null, true);
+        ToolCatalog catalog = ToolCatalog.create(List.of(), new FileStateCache());
+        CompactionConfig compactConfig = new CompactionConfig(1_013_000, 4096, true, true, null, true);
         ContextService contextBuilder = new ContextService(
-                registry.getAllSpecs(), registry.getDescriptions(), config, null, compactConfig);
+                catalog.specifications(), catalog.descriptions(), config, null, compactConfig.contextTokenBudget());
         return new AgentLoop(
                 ai,
-                new ToolDispatcher(),
+                catalog,
                 contextBuilder,
                 null,
                 new ToolExecutionConfirmation() {
@@ -152,7 +151,7 @@ class AgentLoopRecoveryTest {
                 10,
                 null,
                 sink,
-                new SessionCheckpointState(),
+                new CheckpointState(),
                 null,
                 new FileStateCache(),
                 modelCallTimeoutMs,

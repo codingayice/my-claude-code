@@ -1,10 +1,10 @@
 package cn.ayice.veyra.runtime.agent;
 
 import cn.ayice.veyra.session.persistence.TranscriptRecorder;
-import cn.ayice.veyra.memory.extraction.MemoryExtractionCoordinator;
-import cn.ayice.veyra.tool.ToolAuthorization;
+import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.tool.ToolService;
-import cn.ayice.veyra.tool.ToolExecution;
+import cn.ayice.veyra.tool.ToolService.Authorization;
+import cn.ayice.veyra.tool.ToolService.Execution;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.ToolExecutionObserver;
 import cn.ayice.veyra.tool.ToolExecutionPolicy;
@@ -64,12 +64,12 @@ final class AgentToolCoordinator {
     Result execute(List<ChatMessage> initialMessages, List<ToolExecutionRequest> requests) {
         List<ChatMessage> messages = initialMessages;
         PermissionContext permissionContext = permissionContextStore.current();
-        List<ToolAuthorization> approvedCalls = new ArrayList<>();
+        List<Authorization> approvedCalls = new ArrayList<>();
 
         // 授权阶段保持模型请求顺序；拒绝结果也必须写回上下文，避免模型等待不存在的 tool result。
         for (ToolExecutionRequest request : requests) {
             permissionContext = permissionContextStore.current();
-            ToolAuthorization authorization = toolEngine.authorize(
+            Authorization authorization = toolEngine.authorize(
                     request,
                     permissionContext,
                     MAIN_TOOL_POLICY,
@@ -116,9 +116,9 @@ final class AgentToolCoordinator {
         boolean memoryWritten = false;
         if (!approvedCalls.isEmpty()) {
             PermissionContext executionContext = permissionContext;
-            List<CompletableFuture<ToolExecution>> futures = new ArrayList<>();
+            List<CompletableFuture<Execution>> futures = new ArrayList<>();
             // 同一轮中互不依赖的工具并行启动，以最长工具耗时作为整批耗时上界。
-            for (ToolAuthorization authorization : approvedCalls) {
+            for (Authorization authorization : approvedCalls) {
                 futures.add(CompletableFuture.supplyAsync(
                         () -> toolEngine.execute(authorization, executionContext, MAIN_TOOL_POLICY),
                         toolExecutor
@@ -129,7 +129,7 @@ final class AgentToolCoordinator {
             for (int index = 0; index < futures.size(); index++) {
                 ToolExecutionRequest request = approvedCalls.get(index).request();
                 try {
-                    ToolExecution execution = futures.get(index).get();
+                    Execution execution = futures.get(index).get();
                     ToolResult result = execution.result();
                     String content = execution.content();
                     events.toolCompleted(request, result, content);

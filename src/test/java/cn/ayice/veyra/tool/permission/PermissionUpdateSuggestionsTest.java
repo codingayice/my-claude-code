@@ -21,8 +21,8 @@ class PermissionUpdateSuggestionsTest {
         PermissionContext context = baseContext();
         ToolExecutionRequest request = request("Read", "{\"file_path\":\"" + jsonPath(outsideFile) + "\"}");
 
-        List<PermissionUpdate> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
-        PermissionContext updated = PermissionUpdateApplier.apply(context, updates);
+        List<PermissionContextStore.Update> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
+        PermissionContext updated = PermissionContextStore.applyTo(context, updates);
         PermissionRule rule = updated.findRule("Read", outsideFile.toString(), PermissionRule.PermissionBehavior.ALLOW);
 
         PermissionDecision decision = PermissionSupport.checkReadPathPermission(
@@ -42,8 +42,8 @@ class PermissionUpdateSuggestionsTest {
         PermissionContext context = baseContext();
         ToolExecutionRequest request = request("Grep", "{\"pattern\":\"TODO\",\"path\":\"" + jsonPath(outsideDirectory) + "\"}");
 
-        List<PermissionUpdate> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
-        PermissionContext updated = PermissionUpdateApplier.apply(context, updates);
+        List<PermissionContextStore.Update> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
+        PermissionContext updated = PermissionContextStore.applyTo(context, updates);
         PermissionRule rule = updated.findRule("Read", matchedFile.toString(), PermissionRule.PermissionBehavior.ALLOW);
 
         PermissionDecision decision = PermissionSupport.checkReadPathPermission(
@@ -62,8 +62,8 @@ class PermissionUpdateSuggestionsTest {
         PermissionContext context = baseContext();
         ToolExecutionRequest request = request("Write", "{\"file_path\":\"" + jsonPath(outsideFile) + "\",\"content\":\"hello\"}");
 
-        List<PermissionUpdate> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
-        PermissionContext updated = PermissionUpdateApplier.apply(context, updates);
+        List<PermissionContextStore.Update> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
+        PermissionContext updated = PermissionContextStore.applyTo(context, updates);
         PermissionRule rule = updated.findRule("Write", outsideFile.toString(), PermissionRule.PermissionBehavior.ALLOW);
 
         PermissionDecision decision = PermissionSupport.checkWritePathPermission(
@@ -86,8 +86,8 @@ class PermissionUpdateSuggestionsTest {
                 .build();
         ToolExecutionRequest request = request("Write", "{\"file_path\":\"" + jsonPath(outsideFile) + "\",\"content\":\"hello\"}");
 
-        List<PermissionUpdate> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
-        PermissionContext updated = PermissionUpdateApplier.apply(context, updates);
+        List<PermissionContextStore.Update> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
+        PermissionContext updated = PermissionContextStore.applyTo(context, updates);
 
         assertEquals(PermissionMode.AUTO_APPROVE, updated.mode());
         assertEquals(true, updated.isWithinAllowedDirectories(outsideFile));
@@ -98,8 +98,8 @@ class PermissionUpdateSuggestionsTest {
         PermissionContext context = baseContext();
         ToolExecutionRequest request = request("bash", "{\"command\":\"npm run build -- --watch\"}");
 
-        List<PermissionUpdate> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
-        PermissionContext updated = PermissionUpdateApplier.apply(context, updates);
+        List<PermissionContextStore.Update> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
+        PermissionContext updated = PermissionContextStore.applyTo(context, updates);
 
         PermissionRule rule = updated.findRule("bash", "npm run test", PermissionRule.PermissionBehavior.ALLOW);
         assertEquals("npm run:*", rule.ruleContent());

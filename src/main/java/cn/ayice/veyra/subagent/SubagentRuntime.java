@@ -1,13 +1,10 @@
 package cn.ayice.veyra.subagent;
 
 import cn.ayice.veyra.config.AppConfig;
-import cn.ayice.veyra.context.ContextBudgetService;
-import cn.ayice.veyra.context.FinalRequestValidator;
 import cn.ayice.veyra.context.WorkingMessage;
-import cn.ayice.veyra.compaction.AutoCompactConfig;
-import cn.ayice.veyra.compaction.CompactTrigger;
-import cn.ayice.veyra.compaction.ConversationChunker;
-import cn.ayice.veyra.compaction.LlmSummaryCompactor;
+import cn.ayice.veyra.compaction.CompactionConfig;
+import cn.ayice.veyra.compaction.CompactionService.Trigger;
+import cn.ayice.veyra.compaction.SummaryCompactor;
 import cn.ayice.veyra.compaction.MicroCompactor;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.compaction.CompactionService;
@@ -16,16 +13,15 @@ import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionDecision;
 import cn.ayice.veyra.tool.permission.PermissionMode;
-import cn.ayice.veyra.tool.permission.AgentPermissionPolicy;
+import cn.ayice.veyra.subagent.AgentProfile.PermissionPolicy;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.tool.ToolCatalog;
-import cn.ayice.veyra.tool.ToolDispatcher;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import cn.ayice.veyra.subagent.AgentRunResult;
 import cn.ayice.veyra.subagent.SubagentExecution;
-import cn.ayice.veyra.tool.ToolAuthorization;
+import cn.ayice.veyra.tool.ToolService.Authorization;
 import cn.ayice.veyra.tool.ToolService;
-import cn.ayice.veyra.tool.ToolExecution;
+import cn.ayice.veyra.tool.ToolService.Execution;
 import cn.ayice.veyra.tool.ToolExecutionObserver;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -98,7 +94,7 @@ public class SubagentRuntime implements SubagentExecution {
     public AgentRunResult run(String prompt, String subagentType, PermissionContext parentPermissionContext,
                               String agentId, String description) {
         return run(
-                AgentProfiles.fromType(subagentType, config.getMaxRounds()),
+                AgentProfile.fromType(subagentType, config.getMaxRounds()),
                 prompt,
                 parentPermissionContext,
                 agentId,
@@ -112,26 +108,24 @@ public class SubagentRuntime implements SubagentExecution {
     public AgentRunResult run(AgentProfile profile, String prompt, PermissionContext parentPermissionContext,
                               String agentId, String description) {
         long startedAt = System.currentTimeMillis();
-        AgentPermissionPolicy policy = profile.permissionPolicy();
+        PermissionPolicy policy = profile.permissionPolicy();
         ToolCatalog toolset = toolCatalogFactory.create(profile);
-        ToolService toolEngine = new ToolService(toolset.dispatcher(), confirmation, permissionContextStore);
+        ToolService toolEngine = new ToolService(toolset, confirmation, permissionContextStore);
 
-        AutoCompactConfig runtimeCompactCfg = AutoCompactConfig.from(config);
+        CompactionConfig runtimeCompactCfg = CompactionConfig.from(config);
         ContextService contextBuilder = new ContextService(
-                toolset.registry().getAllSpecs(),
-                toolset.registry().getDescriptions(),
+                toolset.specifications(),
+                toolset.descriptions(),
                 config,
                 null,
-                runtimeCompactCfg
+                runtimeCompactCfg.contextTokenBudget()
         );
         CompactionService turnPreparer = new CompactionService(
                 contextBuilder,
                 runtimeCompactCfg,
-                new ContextBudgetService(runtimeCompactCfg),
                 new MicroCompactor(),
                 null,
-                new LlmSummaryCompactor(ai, new ConversationChunker()),
-                new FinalRequestValidator(),
+                new SummaryCompactor(ai),
                 toolset.fileStateCache()::recentModifiedPaths
         );
         PermissionContext permissionContext = buildPermissionContext(
@@ -155,7 +149,7 @@ public class SubagentRuntime implements SubagentExecution {
             try {
                 CompactionService.PreparedWorkingTurn prepared = turnPreparer.prepareWorking(
                         messages,
-                        CompactTrigger.AUTO,
+                        CompactionService.Trigger.AUTO,
                         round - 1L,
                         permissionContext.workingDir()
                 );
@@ -207,7 +201,7 @@ public class SubagentRuntime implements SubagentExecution {
                 totalToolUseCount++;
                 emitTaskEvent(profile, "task.tool.call.started", agentId, description,
                         Map.of("toolUseId", request.id(), "name", request.name(), "arguments", request.arguments()));
-                ToolAuthorization authorization = toolEngine.authorize(
+                Authorization authorization = toolEngine.authorize(
                         request,
                         permissionContext,
                         policy,
@@ -264,7 +258,7 @@ public class SubagentRuntime implements SubagentExecution {
                     continue;
                 }
 
-                ToolExecution execution = toolEngine.execute(authorization, permissionContext, policy);
+                Execution execution = toolEngine.execute(authorization, permissionContext, policy);
                 String content = execution.content();
                 emitTaskEvent(profile, "task.tool.call.completed", agentId, description,
                         Map.of(
@@ -299,7 +293,7 @@ public class SubagentRuntime implements SubagentExecution {
     /**
      * 根据当前输入构建权限上下文。
      */
-    private PermissionContext buildPermissionContext(PermissionContext parent, AgentPermissionPolicy policy) {
+    private PermissionContext buildPermissionContext(PermissionContext parent, PermissionPolicy policy) {
         Path workingDir = parent == null || parent.workingDir() == null
                 ? Path.of(config.getWorkspace())
                 : parent.workingDir();

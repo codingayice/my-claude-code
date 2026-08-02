@@ -7,9 +7,9 @@ import java.time.Instant;
  */
 public record MemoryEntry(
         String id,
-        MemoryScope scope,
-        MemoryType type,
-        MemoryActivation activation,
+        Scope scope,
+        Type type,
+        Activation activation,
         String name,
         String description,
         String content,
@@ -17,4 +17,29 @@ public record MemoryEntry(
         Instant updatedAt,
         String sourceSessionId
 ) {
+    /**
+     * 长期记忆的可见范围。
+     */
+    public enum Scope {
+        USER,
+        PROJECT
+    }
+
+    /**
+     * 长期记忆的语义类型。
+     */
+    public enum Type {
+        PREFERENCE,
+        FEEDBACK,
+        CONTEXT,
+        REFERENCE
+    }
+
+    /**
+     * 长期记忆进入模型上下文的方式。
+     */
+    public enum Activation {
+        ALWAYS,
+        RELEVANT
+    }
 }

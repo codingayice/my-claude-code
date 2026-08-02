@@ -1,19 +1,19 @@
 package cn.ayice.veyra.runtime.agent;
 
+import cn.ayice.veyra.memory.MemoryEntry;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
-import cn.ayice.veyra.compaction.AutoCompactConfig;
-import cn.ayice.veyra.compaction.SessionCheckpointState;
-import cn.ayice.veyra.memory.extraction.MemoryExtractionCoordinator;
+import cn.ayice.veyra.compaction.CompactionConfig;
+import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.memory.MemoryFileStore;
 import cn.ayice.veyra.memory.MemoryPaths;
-import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryEntry.Scope;
 import cn.ayice.veyra.memory.MemoryService;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.llm.AIService;
-import cn.ayice.veyra.tool.ToolDispatcher;
+import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
-import cn.ayice.veyra.tool.ToolRegistry;
 import cn.ayice.veyra.memory.tool.MemoryTool;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
@@ -44,24 +44,21 @@ class AgentLoopMemoryCommandTest {
     @Test
     void explicitMemoryToolWriteSkipsBackgroundExtractionForCurrentRange() {
         MemoryService memory = memory();
-        ToolRegistry registry = new ToolRegistry();
-        ToolDispatcher dispatcher = new ToolDispatcher();
         MemoryTool memoryTool = new MemoryTool(memory);
-        registry.register(memoryTool);
-        dispatcher.register(memoryTool);
-        AutoCompactConfig compactConfig = new AutoCompactConfig(1_000_000, 4_096, true, true, null, true);
+        ToolCatalog catalog = ToolCatalog.create(List.of(memoryTool), new FileStateCache());
+        CompactionConfig compactConfig = new CompactionConfig(1_000_000, 4_096, true, true, null, true);
         ContextService contextBuilder = new ContextService(
-                registry.getAllSpecs(),
-                registry.getDescriptions(),
+                catalog.specifications(),
+                catalog.descriptions(),
                 new AppConfig("__missing_agent_loop_memory_command_test_config__.yaml"),
                 null,
-                compactConfig
+                compactConfig.contextTokenBudget()
         );
         SequencedAIService ai = new SequencedAIService();
         CountingExtractionCoordinator extraction = new CountingExtractionCoordinator(memory);
         AgentLoop loop = new AgentLoop(
                 ai,
-                dispatcher,
+                catalog,
                 contextBuilder,
                 null,
                 new ToolExecutionConfirmation() {
@@ -80,7 +77,7 @@ class AgentLoopMemoryCommandTest {
                 10,
                 null,
                 AgentEventSink.NOOP,
-                new SessionCheckpointState(),
+                new CheckpointState(),
                 null,
                 new FileStateCache(),
                 120_000,
@@ -95,12 +92,12 @@ class AgentLoopMemoryCommandTest {
         assertEquals("final answer", result);
         assertEquals(1, extraction.submissions.get());
         assertTrue(extraction.lastSkip);
-        assertEquals("工具批次必须完整结束", memory.show(MemoryScope.PROJECT, "tool-batch-barrier").content());
+        assertEquals("工具批次必须完整结束", memory.show(MemoryEntry.Scope.PROJECT, "tool-batch-barrier").content());
     }
 
     private MemoryService memory() {
         MemoryPaths paths = new MemoryPaths(tempDir.resolve("memory").toString(), tempDir.toString());
-        return new MemoryService(new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200));
+        return new MemoryService(new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200), 4_096, 5, 4_096, 20_480);
     }
 
     private static final class SequencedAIService extends AIService {

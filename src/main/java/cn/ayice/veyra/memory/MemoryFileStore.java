@@ -69,7 +69,7 @@ public final class MemoryFileStore {
     /**
      * 读取指定作用域中的全部合法记忆，按激活方式和更新时间稳定排序。
      */
-    public List<MemoryEntry> list(MemoryScope scope) {
+    public List<MemoryEntry> list(MemoryEntry.Scope scope) {
         ReentrantReadWriteLock.ReadLock lock = lock(scope).readLock();
         lock.lock();
         try {
@@ -82,7 +82,7 @@ public final class MemoryFileStore {
     /**
      * 按稳定 id 读取一条记忆。
      */
-    public Optional<MemoryEntry> read(MemoryScope scope, String id) {
+    public Optional<MemoryEntry> read(MemoryEntry.Scope scope, String id) {
         ReentrantReadWriteLock.ReadLock lock = lock(scope).readLock();
         lock.lock();
         try {
@@ -103,14 +103,14 @@ public final class MemoryFileStore {
             Files.createDirectories(paths.topics(entry.scope()));
             String serialized = serialize(entry);
             if (serialized.getBytes(StandardCharsets.UTF_8).length > maxTopicBytes) {
-                throw new MemoryException(MemoryErrorCode.MEMORY_BUDGET_EXCEEDED, "记忆正文超过持久化预算");
+                throw new MemoryException(MemoryException.Code.MEMORY_BUDGET_EXCEEDED, "记忆正文超过持久化预算");
             }
             atomicWrite(paths.topic(entry.scope(), entry.id()), serialized);
             try {
                 rebuildIndexUnderLock(entry.scope());
             } catch (MemoryException indexError) {
                 throw new MemoryException(
-                        MemoryErrorCode.MEMORY_INDEX_REBUILD_FAILED,
+                        MemoryException.Code.MEMORY_INDEX_REBUILD_FAILED,
                         "记忆已保存，但索引重建失败",
                         indexError
                 );
@@ -118,7 +118,7 @@ public final class MemoryFileStore {
         } catch (MemoryException error) {
             throw error;
         } catch (IOException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_WRITE_FAILED, "写入长期记忆失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_WRITE_FAILED, "写入长期记忆失败", error);
         } finally {
             lock.unlock();
         }
@@ -127,7 +127,7 @@ public final class MemoryFileStore {
     /**
      * 删除 topic 并重建索引，未命中时返回 false。
      */
-    public boolean delete(MemoryScope scope, String id) {
+    public boolean delete(MemoryEntry.Scope scope, String id) {
         ReentrantReadWriteLock.WriteLock lock = lock(scope).writeLock();
         lock.lock();
         try {
@@ -139,7 +139,7 @@ public final class MemoryFileStore {
         } catch (MemoryException error) {
             throw error;
         } catch (IOException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_WRITE_FAILED, "删除长期记忆失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_WRITE_FAILED, "删除长期记忆失败", error);
         } finally {
             lock.unlock();
         }
@@ -148,7 +148,7 @@ public final class MemoryFileStore {
     /**
      * 从全部合法 topic 重新生成指定作用域的索引。
      */
-    public void rebuildIndex(MemoryScope scope) {
+    public void rebuildIndex(MemoryEntry.Scope scope) {
         ReentrantReadWriteLock.WriteLock lock = lock(scope).writeLock();
         lock.lock();
         try {
@@ -161,7 +161,7 @@ public final class MemoryFileStore {
     /**
      * 返回指定作用域当前派生索引；索引缺失时先从 topic 重建。
      */
-    public String readIndex(MemoryScope scope) {
+    public String readIndex(MemoryEntry.Scope scope) {
         ReentrantReadWriteLock.WriteLock lock = lock(scope).writeLock();
         lock.lock();
         try {
@@ -170,7 +170,7 @@ public final class MemoryFileStore {
             }
             return Files.readString(paths.index(scope), StandardCharsets.UTF_8).trim();
         } catch (IOException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "读取长期记忆索引失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "读取长期记忆索引失败", error);
         } finally {
             lock.unlock();
         }
@@ -180,13 +180,13 @@ public final class MemoryFileStore {
      * 初始化用户级和项目级目录，并从 topic 修复派生索引。
      */
     private void initialize() {
-        for (MemoryScope scope : MemoryScope.values()) {
+        for (MemoryEntry.Scope scope : MemoryEntry.Scope.values()) {
             try {
                 Files.createDirectories(paths.topics(scope));
                 rebuildIndex(scope);
             } catch (IOException error) {
                 throw new MemoryException(
-                        MemoryErrorCode.MEMORY_WRITE_FAILED,
+                        MemoryException.Code.MEMORY_WRITE_FAILED,
                         "创建长期记忆目录失败: " + scope,
                         error
                 );
@@ -197,7 +197,7 @@ public final class MemoryFileStore {
     /**
      * 在调用方持有命名空间锁时扫描 topic。
      */
-    private List<MemoryEntry> scan(MemoryScope scope) {
+    private List<MemoryEntry> scan(MemoryEntry.Scope scope) {
         Path topics = paths.topics(scope);
         if (!Files.isDirectory(topics)) {
             return List.of();
@@ -216,10 +216,10 @@ public final class MemoryFileStore {
                         }
                     });
         } catch (IOException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "扫描长期记忆失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "扫描长期记忆失败", error);
         }
         entries.sort(Comparator
-                .comparing((MemoryEntry entry) -> entry.activation() != MemoryActivation.ALWAYS)
+                .comparing((MemoryEntry entry) -> entry.activation() != MemoryEntry.Activation.ALWAYS)
                 .thenComparing(MemoryEntry::updatedAt, Comparator.reverseOrder())
                 .thenComparing(MemoryEntry::id));
         return List.copyOf(entries);
@@ -229,33 +229,33 @@ public final class MemoryFileStore {
      * 使用 SnakeYAML 解析 Frontmatter，并校验文件作用域和 id。
      */
     @SuppressWarnings("unchecked")
-    private MemoryEntry readTopic(Path topic, MemoryScope expectedScope) {
+    private MemoryEntry readTopic(Path topic, MemoryEntry.Scope expectedScope) {
         try {
             byte[] bytes = Files.readAllBytes(topic);
             if (bytes.length > maxTopicBytes) {
-                throw new MemoryException(MemoryErrorCode.MEMORY_BUDGET_EXCEEDED, "记忆文件超过读取预算");
+                throw new MemoryException(MemoryException.Code.MEMORY_BUDGET_EXCEEDED, "记忆文件超过读取预算");
             }
             String raw = new String(bytes, StandardCharsets.UTF_8);
             ParsedTopic parsed = splitTopic(raw);
             Object loaded = new Yaml().load(parsed.frontmatter());
             if (!(loaded instanceof Map<?, ?> rawMap)) {
-                throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆 Frontmatter 不是对象");
+                throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆 Frontmatter 不是对象");
             }
             Map<String, Object> metadata = (Map<String, Object>) rawMap;
             String id = paths.validateId(required(metadata, "id"));
             String expectedId = topic.getFileName().toString().replaceFirst("\\.md$", "");
             if (!id.equals(expectedId)) {
-                throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆 id 与文件名不一致");
+                throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆 id 与文件名不一致");
             }
-            MemoryScope scope = parseEnum(MemoryScope.class, required(metadata, "scope"), "scope");
+            MemoryEntry.Scope scope = parseEnum(MemoryEntry.Scope.class, required(metadata, "scope"), "scope");
             if (scope != expectedScope) {
-                throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆作用域与目录不一致");
+                throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆作用域与目录不一致");
             }
             return new MemoryEntry(
                     id,
                     scope,
-                    parseEnum(MemoryType.class, required(metadata, "type"), "type"),
-                    parseEnum(MemoryActivation.class, required(metadata, "activation"), "activation"),
+                    parseEnum(MemoryEntry.Type.class, required(metadata, "type"), "type"),
+                    parseEnum(MemoryEntry.Activation.class, required(metadata, "activation"), "activation"),
                     required(metadata, "name"),
                     required(metadata, "description"),
                     parsed.content().trim(),
@@ -266,9 +266,9 @@ public final class MemoryFileStore {
         } catch (MemoryException error) {
             throw error;
         } catch (IOException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "读取长期记忆失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "读取长期记忆失败", error);
         } catch (RuntimeException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "解析长期记忆失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "解析长期记忆失败", error);
         }
     }
 
@@ -299,7 +299,7 @@ public final class MemoryFileStore {
     /**
      * 在调用方持有写锁时，根据全部合法 topic 生成预算内索引。
      */
-    private void rebuildIndexUnderLock(MemoryScope scope) {
+    private void rebuildIndexUnderLock(MemoryEntry.Scope scope) {
         List<String> lines = new ArrayList<>();
         lines.add("# Memory Index");
         lines.add("");
@@ -320,7 +320,7 @@ public final class MemoryFileStore {
             Files.createDirectories(paths.namespace(scope));
             atomicWrite(paths.index(scope), index);
         } catch (IOException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_INDEX_REBUILD_FAILED, "重建长期记忆索引失败", error);
+            throw new MemoryException(MemoryException.Code.MEMORY_INDEX_REBUILD_FAILED, "重建长期记忆索引失败", error);
         }
     }
 
@@ -358,11 +358,11 @@ public final class MemoryFileStore {
      */
     private static ParsedTopic splitTopic(String raw) {
         if (raw == null || !raw.startsWith(FRONTMATTER_BOUNDARY + "\n")) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆缺少 Frontmatter");
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆缺少 Frontmatter");
         }
         int end = raw.indexOf("\n" + FRONTMATTER_BOUNDARY + "\n", 4);
         if (end < 0) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆 Frontmatter 未闭合");
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆 Frontmatter 未闭合");
         }
         String frontmatter = raw.substring(4, end);
         String content = raw.substring(end + 5);
@@ -372,7 +372,7 @@ public final class MemoryFileStore {
     /**
      * 返回命名空间对应的应用级读写锁。
      */
-    private ReentrantReadWriteLock lock(MemoryScope scope) {
+    private ReentrantReadWriteLock lock(MemoryEntry.Scope scope) {
         return locks.computeIfAbsent(paths.namespace(scope), ignored -> new ReentrantReadWriteLock());
     }
 
@@ -392,7 +392,7 @@ public final class MemoryFileStore {
     private static String required(Map<String, Object> metadata, String key) {
         String value = optional(metadata, key);
         if (value == null || value.isBlank()) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆缺少字段: " + key);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆缺少字段: " + key);
         }
         return value;
     }
@@ -412,7 +412,7 @@ public final class MemoryFileStore {
         try {
             return Enum.valueOf(type, raw.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆字段不合法: " + field, error);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆字段不合法: " + field, error);
         }
     }
 
@@ -423,7 +423,7 @@ public final class MemoryFileStore {
         try {
             return Instant.parse(raw);
         } catch (DateTimeParseException error) {
-            throw new MemoryException(MemoryErrorCode.MEMORY_READ_FAILED, "记忆时间字段不合法: " + field, error);
+            throw new MemoryException(MemoryException.Code.MEMORY_READ_FAILED, "记忆时间字段不合法: " + field, error);
         }
     }
 

@@ -19,11 +19,11 @@ class MicroCompactorTest {
     void truncatesOnlyResultsBeforeRecentFiveAndKeepsHeadAndTail() {
         List<WorkingMessage> messages = historyWithToolResults(7, 2_500);
 
-        CompactionResult result = new MicroCompactor().compact(messages, 1);
+        CompactionService.Result result = new MicroCompactor().compact(messages, 1);
 
         ToolExecutionResultMessage first = (ToolExecutionResultMessage) result.messages().get(2).message();
         ToolExecutionResultMessage recent = (ToolExecutionResultMessage) result.messages().get(12).message();
-        assertEquals(CompactStrategy.MICRO, result.strategy());
+        assertEquals(CompactionService.Strategy.MICRO, result.strategy());
         assertTrue(first.text().startsWith("x".repeat(250)));
         assertTrue(first.text().contains("工具结果过长"));
         assertTrue(first.text().endsWith("x".repeat(250)));
@@ -32,7 +32,7 @@ class MicroCompactorTest {
 
     @Test
     void clearsOldResultsEveryFiftyModelRounds() {
-        CompactionResult result = new MicroCompactor().compact(historyWithToolResults(6, 2_500), 50);
+        CompactionService.Result result = new MicroCompactor().compact(historyWithToolResults(6, 2_500), 50);
 
         ToolExecutionResultMessage first = (ToolExecutionResultMessage) result.messages().get(2).message();
         assertEquals(MicroCompactor.CLEARED_RESULT, first.text());

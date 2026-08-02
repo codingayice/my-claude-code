@@ -1,9 +1,10 @@
 package cn.ayice.veyra.subagent;
 
+import cn.ayice.veyra.memory.MemoryEntry;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.memory.MemoryFileStore;
 import cn.ayice.veyra.memory.MemoryPaths;
-import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryEntry.Scope;
 import cn.ayice.veyra.memory.MemoryService;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.llm.AIService;
@@ -41,7 +42,7 @@ class SubagentRuntimeMemoryProfileTest {
         SubagentRuntime runtime = runtime(ai, memory, null);
 
         AgentRunResult result = runtime.run(
-                AgentProfiles.memoryExtraction(5),
+                AgentProfile.memoryExtraction(5),
                 "保存用户测试偏好",
                 parentContext(tempDir),
                 "memory-test",
@@ -49,7 +50,7 @@ class SubagentRuntimeMemoryProfileTest {
         );
 
         assertEquals("completed", result.status());
-        assertEquals("核心后端改动必须补测试", memory.show(MemoryScope.USER, "backend-test-feedback").content());
+        assertEquals("核心后端改动必须补测试", memory.show(MemoryEntry.Scope.USER, "backend-test-feedback").content());
         assertEquals(List.of("Memory"), ai.firstToolNames);
     }
 
@@ -60,7 +61,7 @@ class SubagentRuntimeMemoryProfileTest {
         SubagentRuntime runtime = runtime(ai, memory, null);
 
         AgentRunResult result = runtime.run(
-                AgentProfiles.memoryExtraction(5),
+                AgentProfile.memoryExtraction(5),
                 "检查最近对话",
                 parentContext(tempDir),
                 "memory-test",
@@ -82,7 +83,7 @@ class SubagentRuntimeMemoryProfileTest {
         SubagentRuntime runtime = runtime(ai, memory, eventSink);
 
         AgentRunResult result = runtime.run(
-                AgentProfiles.memoryExtraction(5),
+                AgentProfile.memoryExtraction(5),
                 "检查最近对话",
                 parentContext(tempDir),
                 "memory-test",
@@ -107,7 +108,7 @@ class SubagentRuntimeMemoryProfileTest {
 
     private MemoryService memory() {
         MemoryPaths paths = new MemoryPaths(tempDir.resolve("memory").toString(), tempDir.toString());
-        return new MemoryService(new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200));
+        return new MemoryService(new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200), 4_096, 5, 4_096, 20_480);
     }
 
     private static PermissionContext parentContext(Path root) {

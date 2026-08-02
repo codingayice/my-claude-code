@@ -29,7 +29,7 @@ public final class MicroCompactor {
     /**
      * 按当前主 Agent 模型回合执行字符截断或每 50 回合旧结果清理。
      */
-    public CompactionResult compact(List<WorkingMessage> messages, long completedModelRounds) {
+    public CompactionService.Result compact(List<WorkingMessage> messages, long completedModelRounds) {
         List<String> compactableIds = new ArrayList<>();
         for (WorkingMessage workingMessage : messages) {
             if (workingMessage.message() instanceof AiMessage aiMessage && aiMessage.hasToolExecutionRequests()) {
@@ -66,9 +66,9 @@ public final class MicroCompactor {
                     ToolExecutionResultMessage.from(toolResult.id(), toolResult.toolName(), replacement)
             ));
         }
-        return new CompactionResult(
+        return new CompactionService.Result(
                 result,
-                changed ? CompactStrategy.MICRO : CompactStrategy.NONE,
+                changed ? CompactionService.Strategy.MICRO : CompactionService.Strategy.NONE,
                 java.util.Optional.empty()
         );
     }

@@ -2,25 +2,20 @@ package cn.ayice.veyra.boot;
 
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
-import cn.ayice.veyra.compaction.AutoCompactConfig;
-import cn.ayice.veyra.compaction.ConversationChunker;
-import cn.ayice.veyra.compaction.LlmSummaryCompactor;
-import cn.ayice.veyra.compaction.SessionCheckpointState;
-import cn.ayice.veyra.compaction.SessionSummaryCoordinator;
-import cn.ayice.veyra.compaction.SessionSummaryConfig;
-import cn.ayice.veyra.compaction.SessionSummaryGenerator;
-import cn.ayice.veyra.session.SessionRuntime;
-import cn.ayice.veyra.session.SessionRuntimeCreator;
-import cn.ayice.veyra.session.ToolApprovalQueue;
+import cn.ayice.veyra.compaction.CompactionConfig;
+import cn.ayice.veyra.compaction.SummaryCompactor;
+import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
+import cn.ayice.veyra.runtime.session.SessionRuntime;
+import cn.ayice.veyra.runtime.session.RuntimeSessionRegistry;
+import cn.ayice.veyra.runtime.session.ToolApprovalQueue;
 import cn.ayice.veyra.session.event.SessionAgentEventSink;
 import cn.ayice.veyra.session.event.SessionEventStream;
 import cn.ayice.veyra.interaction.command.SlashCommands;
 import cn.ayice.veyra.llm.AIService;
-import cn.ayice.veyra.memory.MemoryContextBuilder;
-import cn.ayice.veyra.memory.extraction.MemoryExtractionCoordinator;
+import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.memory.MemoryFileStore;
 import cn.ayice.veyra.memory.MemoryPaths;
-import cn.ayice.veyra.memory.MemoryRecallService;
 import cn.ayice.veyra.memory.MemoryService;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
@@ -28,7 +23,6 @@ import cn.ayice.veyra.tool.permission.PermissionMode;
 import cn.ayice.veyra.runtime.agent.AgentLoop;
 import cn.ayice.veyra.subagent.AgentProfile;
 import cn.ayice.veyra.subagent.SubagentRuntime;
-import cn.ayice.veyra.subagent.AgentTaskManager;
 import cn.ayice.veyra.subagent.SubagentService;
 import cn.ayice.veyra.tool.background.BackgroundManager;
 import cn.ayice.veyra.runtime.chat.ChatLoop;
@@ -36,8 +30,6 @@ import cn.ayice.veyra.session.persistence.StoreBackedTranscriptRecorder;
 import cn.ayice.veyra.session.persistence.TranscriptStore;
 import cn.ayice.veyra.tool.BaseTool;
 import cn.ayice.veyra.tool.ToolCatalog;
-import cn.ayice.veyra.tool.ToolDispatcher;
-import cn.ayice.veyra.tool.ToolRegistry;
 import cn.ayice.veyra.subagent.tool.AgentTool;
 import cn.ayice.veyra.tool.background.BackgroundRunTool;
 import cn.ayice.veyra.tool.builtin.BashTool;
@@ -52,7 +44,7 @@ import cn.ayice.veyra.subagent.tool.StopTaskTool;
 import cn.ayice.veyra.tool.builtin.TodoWriteTool;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import cn.ayice.veyra.tool.state.TodoManager;
-import cn.ayice.veyra.tool.permission.AgentPermissionPolicy;
+import cn.ayice.veyra.subagent.AgentProfile.PermissionPolicy;
 import dev.langchain4j.data.message.ChatMessage;
 
 import java.nio.file.Path;
@@ -66,7 +58,7 @@ import org.slf4j.LoggerFactory;
  * 单个会话运行时的对象装配入口。
  * <p>该类集中创建 Agent、工具、权限、记忆和事件组件，业务包不得在其他位置重复拼装完整对象图。</p>
  */
-public class SessionRuntimeFactory implements SessionRuntimeCreator {
+public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
 
     private static final Logger log = LoggerFactory.getLogger(SessionRuntimeFactory.class);
 
@@ -77,7 +69,6 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
     private final Executor ioExecutor;
     private final AIService ai;
     private final MemoryService memoryService;
-    private final MemoryContextBuilder memoryContextService;
 
     /**
      * 使用全局配置、转录存储和受 Spring 管理的线程池创建会话工厂。
@@ -104,11 +95,8 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
                 config.getMemoryMaxIndexBytes(),
                 config.getMemoryMaxScannedTopics()
         );
-        this.memoryService = new MemoryService(store);
-        this.memoryContextService = new MemoryContextBuilder(
-                memoryService,
+        this.memoryService = new MemoryService(
                 store,
-                new MemoryRecallService(store),
                 config.getMemoryMaxAlwaysContextBytes(),
                 config.getMemoryMaxRecallItems(),
                 config.getMemoryMaxRecalledTopicBytes(),
@@ -137,8 +125,7 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
                 permissionContextStore,
                 this::createSubagentToolCatalog
         );
-        AgentTaskManager agentTaskManager = new AgentTaskManager(agentRuntime, taskExecutor, eventSink::emit);
-        SubagentService subagentService = new SubagentService(agentTaskManager);
+        SubagentService subagentService = new SubagentService(agentRuntime, taskExecutor, eventSink::emit);
         BackgroundManager backgroundManager = new BackgroundManager(ioExecutor, eventSink::emit);
         TodoManager todoManager = new TodoManager(eventSink::emit);
         ToolCatalog toolCatalog = ToolCatalog.create(List.of(
@@ -155,28 +142,25 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
                 new MemoryTool(memoryService),
                 new TodoWriteTool(todoManager)
         ), fileStateCache);
-        ToolRegistry registry = toolCatalog.registry();
-        ToolDispatcher dispatcher = toolCatalog.dispatcher();
-
         // 上下文、记忆和压缩服务共享同一份会话工具元数据与持久记忆目录。
-        AutoCompactConfig compactConfig = AutoCompactConfig.from(config);
+        CompactionConfig compactConfig = CompactionConfig.from(config);
         ContextService contextBuilder = new ContextService(
-                registry.getAllSpecs(),
-                registry.getDescriptions(),
+                toolCatalog.specifications(),
+                toolCatalog.descriptions(),
                 config,
-                memoryContextService,
-                compactConfig
+                memoryService,
+                compactConfig.contextTokenBudget()
         );
-        SessionCheckpointState checkpointState = new SessionCheckpointState();
-        SessionSummaryConfig sessionSummaryConfig = SessionSummaryConfig.defaults();
+        CheckpointState checkpointState = new CheckpointState();
+        CompactionConfig.SummaryPolicy sessionSummaryConfig = CompactionConfig.SummaryPolicy.defaults();
         if (sessionSummaryConfig.maxInputTokens() + sessionSummaryConfig.maxSummaryTokens()
                 > compactConfig.effectiveWindow()
-                || LlmSummaryCompactor.DEFAULT_MAX_CHUNK_INPUT_TOKENS
-                + LlmSummaryCompactor.DEFAULT_MAX_OUTPUT_TOKENS > compactConfig.effectiveWindow()) {
+                || SummaryCompactor.DEFAULT_MAX_CHUNK_INPUT_TOKENS
+                + SummaryCompactor.DEFAULT_MAX_OUTPUT_TOKENS > compactConfig.effectiveWindow()) {
             throw new IllegalArgumentException("compaction summary request exceeds the effective context window");
         }
-        SessionSummaryCoordinator sessionSummaryCoordinator = new SessionSummaryCoordinator(
-                new SessionSummaryGenerator(ai, new ConversationChunker(), sessionSummaryConfig),
+        BackgroundSummaryScheduler sessionSummaryCoordinator = new BackgroundSummaryScheduler(
+                new SummaryCompactor(ai, sessionSummaryConfig),
                 checkpointState,
                 ioExecutor,
                 sessionSummaryConfig,
@@ -194,7 +178,7 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
         // AgentLoop 与 ChatLoop 共享模型和 transcript，但保持不同的执行策略和历史副本。
         AgentLoop agentLoop = new AgentLoop(
                 ai,
-                dispatcher,
+                toolCatalog,
                 contextBuilder,
                 backgroundManager,
                 confirmation,
@@ -242,7 +226,7 @@ public class SessionRuntimeFactory implements SessionRuntimeCreator {
      */
     private ToolCatalog createSubagentToolCatalog(AgentProfile profile) {
         FileStateCache fileStateCache = new FileStateCache();
-        AgentPermissionPolicy policy = profile.permissionPolicy();
+        PermissionPolicy policy = profile.permissionPolicy();
         List<BaseTool> tools = new ArrayList<>();
         tools.add(new FileReadTool(fileStateCache));
         tools.add(new FileEditTool(fileStateCache));

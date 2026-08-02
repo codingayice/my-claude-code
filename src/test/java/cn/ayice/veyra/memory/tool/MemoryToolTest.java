@@ -1,8 +1,9 @@
 package cn.ayice.veyra.memory.tool;
 
+import cn.ayice.veyra.memory.MemoryEntry;
 import cn.ayice.veyra.memory.MemoryFileStore;
 import cn.ayice.veyra.memory.MemoryPaths;
-import cn.ayice.veyra.memory.MemoryScope;
+import cn.ayice.veyra.memory.MemoryEntry.Scope;
 import cn.ayice.veyra.memory.MemoryService;
 import cn.ayice.veyra.tool.ToolResult;
 import org.junit.jupiter.api.Test;
@@ -42,7 +43,7 @@ class MemoryToolTest {
         assertTrue(remembered.success());
         assertTrue(remembered.content().contains("success=true"));
         assertTrue(forgotten.success());
-        assertTrue(service.list(MemoryScope.USER).isEmpty());
+        assertTrue(service.list(MemoryEntry.Scope.USER).isEmpty());
     }
 
     @Test
@@ -67,6 +68,6 @@ class MemoryToolTest {
 
     private MemoryService service() {
         MemoryPaths paths = new MemoryPaths(tempDir.resolve("memory").toString(), tempDir.toString());
-        return new MemoryService(new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200));
+        return new MemoryService(new MemoryFileStore(paths, 16 * 1024, 200, 25 * 1024, 200), 4_096, 5, 4_096, 20_480);
     }
 }

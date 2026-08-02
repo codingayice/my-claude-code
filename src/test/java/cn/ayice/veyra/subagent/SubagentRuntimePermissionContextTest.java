@@ -1,6 +1,6 @@
 package cn.ayice.veyra.subagent;
 
-import cn.ayice.veyra.tool.permission.AgentPermissionPolicy;
+import cn.ayice.veyra.subagent.AgentProfile.PermissionPolicy;
 
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.tool.permission.PermissionContext;
@@ -39,8 +39,8 @@ class SubagentRuntimePermissionContextTest {
                 .addRule(sessionAllow)
                 .build();
 
-        PermissionContext readOnlyContext = buildPermissionContext(parent, AgentPermissionPolicy.readOnly());
-        PermissionContext generalContext = buildPermissionContext(parent, AgentPermissionPolicy.general());
+        PermissionContext readOnlyContext = buildPermissionContext(parent, PermissionPolicy.readOnly());
+        PermissionContext generalContext = buildPermissionContext(parent, PermissionPolicy.general());
 
         assertEquals(PermissionMode.ASK_EVERY_TIME, readOnlyContext.mode());
         assertEquals(PermissionMode.AUTO_APPROVE, generalContext.mode());
@@ -50,7 +50,7 @@ class SubagentRuntimePermissionContextTest {
         assertTrue(readOnlyContext.rules().contains(sessionAllow));
     }
 
-    private PermissionContext buildPermissionContext(PermissionContext parent, AgentPermissionPolicy policy) throws Exception {
+    private PermissionContext buildPermissionContext(PermissionContext parent, PermissionPolicy policy) throws Exception {
         SubagentRuntime runtime = new SubagentRuntime(
                 null,
                 new AppConfig(null),
@@ -62,7 +62,7 @@ class SubagentRuntimePermissionContextTest {
         Method method = SubagentRuntime.class.getDeclaredMethod(
                 "buildPermissionContext",
                 PermissionContext.class,
-                AgentPermissionPolicy.class
+                PermissionPolicy.class
         );
         method.setAccessible(true);
         return (PermissionContext) method.invoke(runtime, parent, policy);
