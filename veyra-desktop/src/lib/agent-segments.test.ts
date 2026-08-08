@@ -6,8 +6,8 @@ import {
   shouldCloseProcessOnAssistantMessage,
 } from './agent-segments.ts'
 
-test('keeps the process block open when the assistant message contains tool requests', () => {
-  assert.equal(shouldCloseProcessOnAssistantMessage(true), false)
+test('closes the preceding process block when the next assistant message contains tool requests', () => {
+  assert.equal(shouldCloseProcessOnAssistantMessage(true), true)
 })
 
 test('closes the process block when the assistant message has no tool requests', () => {

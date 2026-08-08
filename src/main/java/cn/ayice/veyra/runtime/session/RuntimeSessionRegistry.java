@@ -38,7 +38,6 @@ public class RuntimeSessionRegistry implements AutoCloseable {
     public SessionRuntime createSession() {
         String sessionId = UUID.randomUUID().toString();
         SessionRuntime session = runtimeCreator.create(sessionId, List.of());
-        session.persistCreation();
         sessions.put(sessionId, session);
         return session;
     }
@@ -69,11 +68,7 @@ public class RuntimeSessionRegistry implements AutoCloseable {
      */
     private SessionRuntime restoreSession(String sessionId) {
         SessionRecovery.RecoveryResult recovery = sessionRecovery.recover(sessionId);
-        SessionRuntime restored = runtimeCreator.create(sessionId, recovery);
-        if (!recovery.persisted()) {
-            restored.persistCreation();
-        }
-        return restored;
+        return runtimeCreator.create(sessionId, recovery);
     }
 
     /**

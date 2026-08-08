@@ -172,6 +172,7 @@ public final class SessionRecovery {
         SessionSummaryState.SummarySnapshot sessionSummary = null;
         SessionSettings settings = defaults;
         String lastRunStatus = "idle";
+        Map<String, String> runModes = new HashMap<>();
 
         for (SessionJournalEntry entry : entries) {
             ChatMessage message = JournalMessageCodec.decode(entry);
@@ -202,10 +203,11 @@ public final class SessionRecovery {
             }
             if (SessionJournalTypes.RUN_STARTED.equals(entry.type())) {
                 lastRunStatus = "running";
+                runModes.put(entry.runId(), text(entry.payload(), "mode"));
             } else if (SessionJournalTypes.RUN_TERMINALS.contains(entry.type())) {
                 lastRunStatus = entry.type().substring("run.".length());
             }
-            projectStableEvent(entry).ifPresent(stableEvents::add);
+            projectStableEvent(entry, runModes.get(entry.runId())).ifPresent(stableEvents::add);
         }
         return new RecoveryResult(
                 List.copyOf(history),
@@ -221,14 +223,19 @@ public final class SessionRecovery {
      * 将当前稳定 Journal 投影为桌面端冷加载事件，不执行任何修复写回。
      */
     public static List<AgentEvent> stableEvents(List<SessionJournalEntry> entries) {
-        return entries.stream()
-                .map(SessionRecovery::projectStableEvent)
-                .flatMap(Optional::stream)
-                .toList();
+        List<AgentEvent> events = new ArrayList<>();
+        Map<String, String> runModes = new HashMap<>();
+        for (SessionJournalEntry entry : entries) {
+            if (SessionJournalTypes.RUN_STARTED.equals(entry.type())) {
+                runModes.put(entry.runId(), text(entry.payload(), "mode"));
+            }
+            projectStableEvent(entry, runModes.get(entry.runId())).ifPresent(events::add);
+        }
+        return List.copyOf(events);
     }
 
     /** 把用户可见稳定事实映射为冷加载 AgentEvent。 */
-    private static Optional<AgentEvent> projectStableEvent(SessionJournalEntry entry) {
+    private static Optional<AgentEvent> projectStableEvent(SessionJournalEntry entry, String runMode) {
         if (SessionJournalTypes.USER_MESSAGE_RECORDED.equals(entry.type())
                 && Boolean.FALSE.equals(entry.payload().get("visible"))) {
             return Optional.empty();
@@ -273,6 +280,11 @@ public final class SessionRecovery {
             payload = new LinkedHashMap<>(entry.payload());
             Object calls = entry.payload().get("toolCalls");
             payload.put("hasToolRequests", calls instanceof List<?> list && !list.isEmpty());
+            // Agent 实时事件不会暴露模型 thinking；冷恢复必须保持相同的 UI 投影。
+            // 原始 thinking 仍保留在 Journal 中，Chat 模式恢复时也继续展示。
+            if ("agent".equalsIgnoreCase(runMode)) {
+                payload.remove("thinking");
+            }
         }
         return Optional.of(new AgentEvent(
                 entry.sequence(),

@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -163,6 +164,41 @@ class SessionRecoveryTest {
                         "todo.updated", "task.started", "task.completed",
                         "assistant.message.completed", "run.completed"
                 ), result.stableEvents().stream().map(event -> event.type()).toList());
+    }
+
+    @Test
+    void hidesThinkingForAgentRecoveryButKeepsItForChatRecovery() {
+        SessionJournalStore store = store();
+        store.append("s1", null, SessionJournalTypes.SESSION_CREATED, Map.of(
+                "workingDir", tempDir.toString(), "permissionMode", "ask"
+        ), true);
+
+        store.append("s1", "agent-run", SessionJournalTypes.RUN_STARTED, Map.of("mode", "agent"), false);
+        store.append("s1", "agent-run", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
+                JournalMessageCodec.encode(AiMessage.builder()
+                        .text("Agent 回答")
+                        .thinking("Agent 内部推理")
+                        .build()), true);
+        store.append("s1", "agent-run", SessionJournalTypes.RUN_COMPLETED,
+                Map.of("reason", "completed"), true);
+
+        store.append("s1", "chat-run", SessionJournalTypes.RUN_STARTED, Map.of("mode", "chat"), false);
+        store.append("s1", "chat-run", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
+                JournalMessageCodec.encode(AiMessage.builder()
+                        .text("Chat 回答")
+                        .thinking("Chat 思考过程")
+                        .build()), true);
+        store.append("s1", "chat-run", SessionJournalTypes.RUN_COMPLETED,
+                Map.of("reason", "completed"), true);
+
+        List<cn.ayice.veyra.session.event.AgentEvent> assistantEvents = recovery(store).recover("s1")
+                .stableEvents().stream()
+                .filter(event -> "assistant.message.completed".equals(event.type()))
+                .toList();
+
+        assertEquals(2, assistantEvents.size());
+        assertFalse(assistantEvents.get(0).payload().containsKey("thinking"));
+        assertEquals("Chat 思考过程", assistantEvents.get(1).payload().get("thinking"));
     }
 
     @Test

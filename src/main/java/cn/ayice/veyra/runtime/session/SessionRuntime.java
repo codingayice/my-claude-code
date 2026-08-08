@@ -165,17 +165,6 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     }
 
     /**
-     * 在注册表发布新 Session 前持久化其创建事实。
-     */
-    public void persistCreation() {
-        if (journalRecorder == null) {
-            return;
-        }
-        PermissionContext context = permissionContextStore.current();
-        journalRecorder.recordSessionCreated(context.workingDir(), context.mode().configValue(), runMode);
-    }
-
-    /**
      * 原子持久化 Run 受理事实；已有未终止 Run 时拒绝。
      */
     public synchronized boolean acceptRun(String runId, String input, String mode) {
@@ -183,7 +172,15 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             return true;
         }
         try {
-            journalRecorder.acceptRun(runId, input, mode);
+            PermissionContext context = permissionContextStore.current();
+            journalRecorder.acceptRun(
+                    runId,
+                    input,
+                    mode,
+                    context.workingDir(),
+                    context.mode().configValue(),
+                    runMode
+            );
             lastRunStatus = "running";
             return true;
         } catch (IllegalStateException alreadyRunning) {

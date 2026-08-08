@@ -19,6 +19,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RuntimeSessionRegistryTest {
 
@@ -26,18 +27,44 @@ class RuntimeSessionRegistryTest {
     Path tempDir;
 
     @Test
-    void createsSessionsAndListsPersistedJournalRecords() throws Exception {
+    void persistsAndListsSessionOnlyAfterFirstRunIsAccepted() throws Exception {
         TestRuntime runtime = runtime(config());
         try (RuntimeSessionRegistry sessions = runtime.sessions()) {
             SessionRuntime session = sessions.createSession();
-            runtime.store().append(session.sessionId(), "run-1", SessionJournalTypes.USER_MESSAGE_RECORDED,
-                    JournalMessageCodec.encode(UserMessage.from("第一条消息")), true);
+            assertTrue(sessions.listSessions().isEmpty());
+
+            assertTrue(session.acceptRun("run-1", "第一条消息", "agent"));
+            session.failEnqueue();
 
             List<SessionRecord> records = sessions.listSessions();
 
             assertEquals(1, records.size());
             assertEquals(session.sessionId(), records.get(0).sessionId());
             assertEquals("第一条消息", records.get(0).title());
+            assertEquals(SessionJournalTypes.SESSION_CREATED,
+                    runtime.store().read(session.sessionId()).get(0).type());
+        }
+    }
+
+    @Test
+    void keepsPreRunSettingsInMemoryAndPersistsLatestSnapshotWithFirstRun() throws Exception {
+        TestRuntime runtime = runtime(config());
+        try (RuntimeSessionRegistry sessions = runtime.sessions()) {
+            SessionRuntime session = sessions.createSession();
+            Path changedWorkingDir = tempDir.resolve("changed-workspace");
+
+            session.updateSettings(changedWorkingDir.toString(), "ask_every_time", "agent");
+            assertTrue(runtime.store().read(session.sessionId()).isEmpty());
+
+            assertTrue(session.acceptRun("run-1", "开始任务", "agent"));
+            session.failEnqueue();
+
+            var created = runtime.store().read(session.sessionId()).get(0);
+            assertEquals(SessionJournalTypes.SESSION_CREATED, created.type());
+            assertEquals(changedWorkingDir.toAbsolutePath().normalize().toString(),
+                    created.payload().get("workingDir"));
+            assertEquals("ask_every_time", created.payload().get("permissionMode"));
+            assertEquals("agent", created.payload().get("runMode"));
         }
     }
 

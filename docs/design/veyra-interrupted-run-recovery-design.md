@@ -150,7 +150,7 @@ task.finished
 
 | 类型 | 必需字段 |
 | --- | --- |
-| `session.created` | `workingDir`、`permissionMode` |
+| `session.created` | `workingDir`、`permissionMode`、`runMode` |
 | `session.settings.updated` | 完整设置快照 |
 | `run.started` | `mode`、`input` |
 | `user.message.recorded` | `text`、`visible` |
@@ -170,29 +170,31 @@ Assistant 的 `toolCalls` 必须保存 ID、名称和完整参数，不能只保
 
 ```text
 生成 sessionId
-  -> 创建尚未注册的 Runtime
-  -> append + force session.created
-  -> 注册 Runtime
+  -> 创建并注册仅存在于内存的 Runtime
   -> 返回 SessionState
 ```
 
-空 Session 由 `session.created` 持久存在。
+创建接口本身不写 Journal。未发起过 Run 的空 Session 不进入历史列表，进程退出后直接消失。
+`session.created` 延迟到首个 Run 被接受时写入，并保存当时最新的完整设置快照。
 
 ### 6.2 更新设置
 
 ```text
 校验完整设置
-  -> append + force session.settings.updated
+  -> 未持久化 Session：只更新 PermissionContextStore
+  -> 已持久化 Session：append + force session.settings.updated
   -> 更新 PermissionContextStore
 ```
 
-恢复选择 sequence 最大的完整设置快照。
+首个 Run 之前的多次设置修改只保留最终内存值，由 `session.created` 一次性保存；首个 Run
+之后继续追加完整的 `session.settings.updated`。恢复选择 sequence 最大的完整设置快照。
 
 ### 6.3 受理 Run
 
 ```text
 原子检查 activeRunId 为空
   -> 生成 runId
+  -> 若 Session 尚未持久化，append + force session.created
   -> append run.started
   -> append user.message.recorded
   -> force

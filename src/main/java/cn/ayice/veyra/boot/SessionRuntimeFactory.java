@@ -120,7 +120,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 config.getPermissionMode(),
                 "chat"
         );
-        return createRuntime(sessionId, initialHistory, null, settings, "idle");
+        return createRuntime(sessionId, initialHistory, null, settings, "idle", false);
     }
 
     /** 使用 Journal 恢复投影装配会话独占运行时。 */
@@ -131,7 +131,8 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 recovery.agentHistory(),
                 recovery.sessionSummary().orElse(null),
                 recovery.settings(),
-                recovery.lastRunStatus()
+                recovery.lastRunStatus(),
+                recovery.persisted()
         );
     }
 
@@ -141,11 +142,16 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
             List<ChatMessage> initialHistory,
             SessionSummaryState.SummarySnapshot restoredSummary,
             SessionSettings restoredSettings,
-            String lastRunStatus
+            String lastRunStatus,
+            boolean sessionPersisted
     ) {
         // 首先创建会话独占的事件、审批、权限和转录组件，避免可变状态跨会话共享。
         SessionEventStream events = new SessionEventStream(sessionId);
-        SessionJournalRecorder journalRecorder = new SessionJournalRecorder(sessionId, journalStore);
+        SessionJournalRecorder journalRecorder = new SessionJournalRecorder(
+                sessionId,
+                journalStore,
+                sessionPersisted
+        );
         SessionAgentEventSink eventSink = new SessionAgentEventSink(events, journalRecorder);
         ToolApprovalQueue confirmation = new ToolApprovalQueue(eventSink);
         PermissionContextStore permissionContextStore = new PermissionContextStore(
