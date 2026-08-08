@@ -42,7 +42,7 @@ public final class SessionRecovery {
 
     public SessionRecovery(SessionJournalStore store, Path defaultWorkingDir, String defaultPermissionMode) {
         this.store = store;
-        this.defaults = new SessionSettings(defaultWorkingDir, defaultPermissionMode);
+        this.defaults = new SessionSettings(defaultWorkingDir, defaultPermissionMode, "chat");
     }
 
     /** 读取 Session 事实、幂等补齐悬挂终态并返回恢复投影。 */
@@ -57,6 +57,8 @@ public final class SessionRecovery {
         Set<String> completedTools = new HashSet<>();
         Map<String, StartedTask> startedTasks = new LinkedHashMap<>();
         Set<String> finishedTasks = new HashSet<>();
+        Map<String, String> requestedApprovals = new LinkedHashMap<>();
+        Set<String> resolvedApprovals = new HashSet<>();
         Map<String, String> openRuns = new LinkedHashMap<>();
         Set<String> terminalRuns = new HashSet<>();
 
@@ -77,8 +79,16 @@ public final class SessionRecovery {
                     String taskId = text(entry.payload(), "taskId");
                     startedTasks.put(taskId, new StartedTask(entry.runId(), text(entry.payload(), "taskType")));
                 }
-                case SessionJournalTypes.TASK_FINISHED ->
+                case SessionJournalTypes.TASK_COMPLETED,
+                     SessionJournalTypes.TASK_FAILED,
+                     SessionJournalTypes.TASK_KILLED,
+                     SessionJournalTypes.TASK_INTERRUPTED ->
                         finishedTasks.add(text(entry.payload(), "taskId"));
+                case SessionJournalTypes.PERMISSION_REQUESTED ->
+                        requestedApprovals.put(text(entry.payload(), "approvalId"), entry.runId());
+                case SessionJournalTypes.PERMISSION_RESOLVED,
+                     SessionJournalTypes.PERMISSION_INTERRUPTED ->
+                        resolvedApprovals.add(text(entry.payload(), "approvalId"));
                 default -> {
                 }
             }
@@ -113,12 +123,26 @@ public final class SessionRecovery {
             SessionJournalEntry repair = store.append(
                     sessionId,
                     task.getValue().runId(),
-                    SessionJournalTypes.TASK_FINISHED,
+                    SessionJournalTypes.TASK_INTERRUPTED,
                     Map.of(
                             "taskId", task.getKey(),
                             "status", "interrupted",
                             "content", "因后端进程退出而中断，未自动重新创建"
                     ),
+                    true
+            );
+            entries.add(repair);
+        }
+
+        for (Map.Entry<String, String> approval : requestedApprovals.entrySet()) {
+            if (resolvedApprovals.contains(approval.getKey())) {
+                continue;
+            }
+            SessionJournalEntry repair = store.append(
+                    sessionId,
+                    approval.getValue(),
+                    SessionJournalTypes.PERMISSION_INTERRUPTED,
+                    Map.of("approvalId", approval.getKey(), "decision", "interrupted"),
                     true
             );
             entries.add(repair);
@@ -158,10 +182,12 @@ public final class SessionRecovery {
                     || SessionJournalTypes.SESSION_SETTINGS_UPDATED.equals(entry.type())) {
                 String workingDir = text(entry.payload(), "workingDir");
                 String permissionMode = text(entry.payload(), "permissionMode");
+                String runMode = text(entry.payload(), "runMode");
                 if (!workingDir.isBlank()) {
                     settings = new SessionSettings(
                             Path.of(workingDir),
-                            permissionMode.isBlank() ? settings.permissionMode() : permissionMode
+                            permissionMode.isBlank() ? settings.permissionMode() : permissionMode,
+                            runMode.isBlank() ? settings.runMode() : runMode
                     );
                 }
             } else if (SessionJournalTypes.CONTEXT_SUMMARY_RECORDED.equals(entry.type())) {
@@ -215,8 +241,23 @@ public final class SessionRecovery {
                 case "COMPLETED" -> "tool.call.completed";
                 default -> "tool.call.failed";
             };
-            case SessionJournalTypes.TASK_STARTED -> "task.started";
-            case SessionJournalTypes.TASK_FINISHED -> "task.finished";
+            case SessionJournalTypes.TOOL_CALL_STARTED,
+                 SessionJournalTypes.PERMISSION_REQUESTED,
+                 SessionJournalTypes.PERMISSION_RESOLVED,
+                 SessionJournalTypes.PERMISSION_INTERRUPTED,
+                 SessionJournalTypes.TODO_UPDATED,
+                 SessionJournalTypes.TASK_STARTED,
+                 SessionJournalTypes.TASK_STEP_STARTED,
+                 SessionJournalTypes.TASK_ASSISTANT_MESSAGE_COMPLETED,
+                 SessionJournalTypes.TASK_TOOL_CALL_STARTED,
+                 SessionJournalTypes.TASK_TOOL_CALL_COMPLETED,
+                 SessionJournalTypes.TASK_TOOL_CALL_REJECTED,
+                 SessionJournalTypes.TASK_PERMISSION_REQUESTED,
+                 SessionJournalTypes.TASK_PERMISSION_RESOLVED,
+                 SessionJournalTypes.TASK_COMPLETED,
+                 SessionJournalTypes.TASK_FAILED,
+                 SessionJournalTypes.TASK_KILLED,
+                 SessionJournalTypes.TASK_INTERRUPTED -> entry.type();
             case SessionJournalTypes.RUN_STARTED,
                  SessionJournalTypes.RUN_COMPLETED,
                  SessionJournalTypes.RUN_FAILED,
@@ -227,13 +268,19 @@ public final class SessionRecovery {
         if (eventType == null) {
             return Optional.empty();
         }
+        Map<String, Object> payload = entry.payload();
+        if (SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED.equals(entry.type())) {
+            payload = new LinkedHashMap<>(entry.payload());
+            Object calls = entry.payload().get("toolCalls");
+            payload.put("hasToolRequests", calls instanceof List<?> list && !list.isEmpty());
+        }
         return Optional.of(new AgentEvent(
                 entry.sequence(),
                 entry.sessionId(),
                 entry.runId(),
                 eventType,
                 entry.timestampMs(),
-                entry.payload()
+                payload
         ));
     }
 

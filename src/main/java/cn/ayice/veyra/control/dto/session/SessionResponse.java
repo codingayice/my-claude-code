@@ -7,6 +7,7 @@ public record SessionResponse(
         String sessionId,
         String workingDir,
         String permissionMode,
+        String runMode,
         String lastRunStatus
 ) {
 }

@@ -73,7 +73,8 @@ public class AgentApplicationService {
         return toSessionResponse(runtimeHost.updateSettings(
                 sessionId,
                 request.workingDir(),
-                request.permissionMode()
+                request.permissionMode(),
+                request.runMode()
         ));
     }
 
@@ -160,6 +161,7 @@ public class AgentApplicationService {
                 session.sessionId(),
                 session.workingDir(),
                 session.permissionMode(),
+                session.runMode(),
                 session.lastRunStatus()
         );
     }
@@ -173,7 +175,7 @@ public class AgentApplicationService {
                 record.title(),
                 record.createdAt().toString(),
                 record.updatedAt().toString(),
-                record.transcriptPath().toString()
+                record.journalPath().toString()
         );
     }
 

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { basename, dirname } from "@tauri-apps/api/path"
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog"
@@ -13,11 +13,13 @@ import {
   History,
   Loader2,
   ListTodo,
+  Plus,
   PanelRight,
   Presentation,
   Save,
   Scale,
   Search,
+  RefreshCw,
   Table2,
   MessageSquare,
   type LucideIcon,
@@ -37,7 +39,7 @@ import {
   type DocFile,
 } from "@/components/document-tree"
 import { ModuleRail, type ModuleRailItem } from "@/components/module-rail"
-import ChatPanel from "@/components/chat-panel"
+import ChatPanel, { ensureAgentService } from "@/components/chat-panel"
 import { WordPreviewPane, type WordPreviewPaneHandle } from "@/components/word-preview-pane"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -53,6 +55,7 @@ import {
   SheetContent,
 } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
+import { agentApi, type AgentSessionRecord } from "@/lib/agent-api"
 
 type WorkspaceModule = "ai" | "apps" | "tasks" | "history"
 
@@ -61,6 +64,11 @@ type SessionState = {
   document: OoJsonWord
   fileName: string
   filePath: string | null
+}
+
+type AssistantSessionTarget = {
+  revision: number
+  sessionId: string | null
 }
 
 function WorkspaceAction({
@@ -225,6 +233,12 @@ function App() {
   const [activeModule, setActiveModule] = useState<WorkspaceModule>("apps")
   const [activeApp, setActiveApp] = useState<WorkspaceAppId | null>(null)
   const [assistantOpen, setAssistantOpen] = useState(false)
+  const [assistantSessionTarget, setAssistantSessionTarget] = useState<AssistantSessionTarget>({
+    revision: 0,
+    sessionId: null,
+  })
+  const [activeAssistantSessionId, setActiveAssistantSessionId] = useState<string | null>(null)
+  const [assistantSessionsRevision, setAssistantSessionsRevision] = useState(0)
   const [session, setSession] = useState<SessionState>(() => createBlankSession())
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
   const [treeEntries, setTreeEntries] = useState<DocEntry[]>([])
@@ -232,6 +246,23 @@ function App() {
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [, setExpandedFolders] = useState<Set<string>>(new Set())
   const loadSeqRef = useRef(0)
+
+  const openAssistantSession = useCallback((sessionId: string) => {
+    setAssistantSessionTarget(current => ({ revision: current.revision + 1, sessionId }))
+    setActiveAssistantSessionId(sessionId)
+    setActiveModule("ai")
+  }, [])
+
+  const createAssistantSession = useCallback(() => {
+    setAssistantSessionTarget(current => ({ revision: current.revision + 1, sessionId: null }))
+    setActiveAssistantSessionId(null)
+    setActiveModule("ai")
+  }, [])
+
+  const handleAssistantSessionReady = useCallback((sessionId: string) => {
+    setActiveAssistantSessionId(sessionId)
+    setAssistantSessionsRevision(current => current + 1)
+  }, [])
 
   const applyWorkspaceTree = useCallback(
     async (
@@ -455,7 +486,18 @@ function App() {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <main className="flex min-h-0 flex-1 flex-col">
-            {activeModule === "ai" ? <AiWorkspace workspaceRoot={workspaceRoot} /> : null}
+            {activeModule === "ai" ? (
+              <AiWorkspace
+                activeSessionId={activeAssistantSessionId}
+                key={`assistant-${assistantSessionTarget.revision}`}
+                onNewSession={createAssistantSession}
+                onOpenSession={openAssistantSession}
+                onSessionReady={handleAssistantSessionReady}
+                refreshKey={assistantSessionsRevision}
+                sessionId={assistantSessionTarget.sessionId}
+                workspaceRoot={workspaceRoot}
+              />
+            ) : null}
             {activeModule === "apps" ? (
               activeApp === "document" ? (
                 <WordWorkspace
@@ -483,7 +525,13 @@ function App() {
               )
             ) : null}
             {activeModule === "tasks" ? <TaskWorkspace /> : null}
-            {activeModule === "history" ? <HistoryWorkspace /> : null}
+            {activeModule === "history" ? (
+              <HistoryWorkspace
+                activeSessionId={activeAssistantSessionId}
+                onNewSession={createAssistantSession}
+                onOpenSession={openAssistantSession}
+              />
+            ) : null}
           </main>
         </div>
       </div>
@@ -491,10 +539,12 @@ function App() {
       <Sheet open={assistantOpen} onOpenChange={setAssistantOpen}>
         <SheetContent className="w-[min(420px,100vw)] gap-0 p-0 sm:max-w-[420px]">
           <div className="min-h-0 flex-1">
-            <ChatPanel
-              initialInput="Polish the current paragraph and make the structure clearer."
-              workspaceRoot={workspaceRoot}
-            />
+            {assistantOpen ? (
+              <ChatPanel
+                initialInput="Polish the current paragraph and make the structure clearer."
+                workspaceRoot={workspaceRoot}
+              />
+            ) : null}
           </div>
         </SheetContent>
       </Sheet>
@@ -760,9 +810,157 @@ function isReadyWorkspaceApp(appId: WorkspaceApp["id"]): appId is WorkspaceAppId
   return appId === "document" || appId === "study"
 }
 
-function AiWorkspace({ workspaceRoot }: { workspaceRoot: string | null }) {
+function AiWorkspace({
+  activeSessionId,
+  onNewSession,
+  onOpenSession,
+  onSessionReady,
+  refreshKey,
+  sessionId,
+  workspaceRoot,
+}: {
+  activeSessionId: string | null
+  onNewSession: () => void
+  onOpenSession: (sessionId: string) => void
+  onSessionReady: (sessionId: string) => void
+  refreshKey: number
+  sessionId: string | null
+  workspaceRoot: string | null
+}) {
   return (
-    <ChatPanel workspaceRoot={workspaceRoot} />
+    <div className="flex min-h-0 flex-1 bg-background">
+      <AssistantSessionSidebar
+        activeSessionId={activeSessionId}
+        onNewSession={onNewSession}
+        onOpenSession={onOpenSession}
+        refreshKey={refreshKey}
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <ChatPanel
+          initialSessionId={sessionId}
+          onSessionReady={onSessionReady}
+          workspaceRoot={workspaceRoot}
+        />
+      </div>
+    </div>
+  )
+}
+
+function AssistantSessionSidebar({
+  activeSessionId,
+  onNewSession,
+  onOpenSession,
+  refreshKey,
+}: {
+  activeSessionId: string | null
+  onNewSession: () => void
+  onOpenSession: (sessionId: string) => void
+  refreshKey: number
+}) {
+  const [sessions, setSessions] = useState<AgentSessionRecord[]>([])
+  const [query, setQuery] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadSessions = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      await ensureAgentService()
+      const response = await agentApi.listSessions()
+      setSessions(response.items)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "会话列表加载失败。")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSessions()
+  }, [loadSessions, refreshKey])
+
+  const visibleSessions = useMemo(() => {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) return sessions
+    return sessions.filter(session =>
+      session.title.toLowerCase().includes(normalized) ||
+      session.sessionId.toLowerCase().includes(normalized)
+    )
+  }, [query, sessions])
+
+  return (
+    <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-muted/20">
+      <div className="flex h-14 items-center gap-2 border-b border-border bg-background px-3">
+        <div className="min-w-0 flex-1 text-sm font-semibold">会话</div>
+        <Button
+          aria-label="刷新会话"
+          disabled={loading}
+          onClick={() => void loadSessions()}
+          size="icon-sm"
+          type="button"
+          variant="ghost"
+        >
+          <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+        </Button>
+        <Button aria-label="新建会话" onClick={onNewSession} size="icon-sm" type="button">
+          <Plus className="size-4" />
+        </Button>
+      </div>
+
+      <div className="border-b border-border/70 p-3">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="h-8 pl-8 text-xs"
+            onChange={event => setQuery(event.target.value)}
+            placeholder="搜索会话"
+            value={query}
+          />
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        {error ? (
+          <button
+            className="w-full rounded-lg border border-destructive/30 p-3 text-left text-xs text-destructive"
+            onClick={() => void loadSessions()}
+            type="button"
+          >
+            {error} 点击重试
+          </button>
+        ) : loading && sessions.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            加载中…
+          </div>
+        ) : visibleSessions.length === 0 ? (
+          <div className="py-8 text-center text-xs text-muted-foreground">
+            {query ? "没有匹配的会话" : "暂无历史会话"}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {visibleSessions.map(session => (
+              <button
+                className={cn(
+                  "w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent",
+                  activeSessionId === session.sessionId && "bg-accent text-accent-foreground"
+                )}
+                key={session.sessionId}
+                onClick={() => onOpenSession(session.sessionId)}
+                type="button"
+              >
+                <div className="truncate text-xs font-medium">{session.title || session.sessionId}</div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                  <span className="truncate font-mono">{session.sessionId.slice(0, 8)}</span>
+                  <span className="shrink-0">{formatSessionTime(session.updatedAt)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
   )
 }
 
@@ -775,12 +973,139 @@ function TaskWorkspace() {
   )
 }
 
-function HistoryWorkspace() {
+function formatSessionTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)
+}
+
+function HistoryWorkspace({
+  activeSessionId,
+  onNewSession,
+  onOpenSession,
+}: {
+  activeSessionId: string | null
+  onNewSession: () => void
+  onOpenSession: (sessionId: string) => void
+}) {
+  const [sessions, setSessions] = useState<AgentSessionRecord[]>([])
+  const [query, setQuery] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadSessions = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      await ensureAgentService()
+      const response = await agentApi.listSessions()
+      setSessions(response.items)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "历史会话加载失败。")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSessions()
+  }, [loadSessions])
+
+  const visibleSessions = useMemo(() => {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) return sessions
+    return sessions.filter(session =>
+      session.title.toLowerCase().includes(normalized) ||
+      session.sessionId.toLowerCase().includes(normalized)
+    )
+  }, [query, sessions])
+
   return (
-    <EmptyWorkspace
-      title="历史记录暂未启用"
-      description="等这一版壳层稳定后，再接回最近会话、文档打开记录、导出记录和助手操作记录。"
-    />
+    <div className="flex min-h-0 flex-1 flex-col bg-muted/20">
+      <div className="flex items-center gap-3 border-b border-border bg-background px-5 py-4">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold">历史会话</h2>
+          <p className="mt-1 text-xs text-muted-foreground">继续之前的对话和任务上下文</p>
+        </div>
+        <Button className="gap-1.5" onClick={onNewSession} size="sm" type="button">
+          <Plus className="size-4" />
+          新建会话
+        </Button>
+      </div>
+
+      <div className="flex items-center gap-2 border-b border-border/70 bg-background px-5 py-3">
+        <div className="relative max-w-md flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-9"
+            onChange={event => setQuery(event.target.value)}
+            placeholder="搜索标题或会话 ID"
+            value={query}
+          />
+        </div>
+        <Button
+          aria-label="刷新历史会话"
+          disabled={loading}
+          onClick={() => void loadSessions()}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+        </Button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-5">
+        {error ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            <p>{error}</p>
+            <Button className="mt-3" onClick={() => void loadSessions()} size="sm" type="button" variant="outline">
+              重试
+            </Button>
+          </div>
+        ) : loading && sessions.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-20 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            正在加载历史会话…
+          </div>
+        ) : visibleSessions.length === 0 ? (
+          <div className="py-20 text-center text-sm text-muted-foreground">
+            {query ? "没有匹配的历史会话" : "还没有历史会话"}
+          </div>
+        ) : (
+          <div className="mx-auto grid max-w-5xl gap-3">
+            {visibleSessions.map(session => (
+              <button
+                className={cn(
+                  "group rounded-xl border bg-background p-4 text-left shadow-xs transition-colors hover:border-primary/40 hover:bg-accent/30",
+                  activeSessionId === session.sessionId && "border-primary/50 bg-accent/40"
+                )}
+                key={session.sessionId}
+                onClick={() => onOpenSession(session.sessionId)}
+                type="button"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{session.title || session.sessionId}</div>
+                    <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+                      {session.sessionId}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-xs text-muted-foreground">
+                    {formatSessionTime(session.updatedAt)}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 

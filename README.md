@@ -210,6 +210,11 @@ java -Dfile.encoding=UTF-8 -jar target/veyra-1.0-SNAPSHOT.jar `
   --port 17361
 ```
 
+Veyra 的内部持久化内容统一位于 `~/.veyra`：会话 Journal 和恢复状态在
+`~/.veyra/sessions`，长期记忆在 `~/.veyra/memory`，桌面日志在
+`~/.veyra/logs`，UI 偏好保存在 `~/.veyra/preferences.json`。可通过
+`storage.root` 整体调整根目录，不支持为各类数据配置根目录之外的独立路径。
+
 检查服务：
 
 ```powershell

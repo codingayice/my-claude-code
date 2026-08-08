@@ -11,6 +11,6 @@ public record SessionSummary(
         String title,
         Instant createdAt,
         Instant updatedAt,
-        Path transcriptPath
+        Path journalPath
 ) {
 }

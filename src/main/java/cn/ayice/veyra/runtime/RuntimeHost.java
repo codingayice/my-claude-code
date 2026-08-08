@@ -44,7 +44,7 @@ public class RuntimeHost {
     }
 
     /**
-     * 返回指定会话的当前设置；会话尚未激活时从 transcript 恢复。
+     * 返回指定会话的当前设置；会话尚未激活时从 Journal 恢复。
      */
     public SessionState session(String sessionId) {
         return runtimeSessions.getOrCreate(sessionId).state();
@@ -53,8 +53,8 @@ public class RuntimeHost {
     /**
      * 更新指定会话的工作目录和权限模式。
      */
-    public SessionState updateSettings(String sessionId, String workingDir, String permissionMode) {
-        return runtimeSessions.getOrCreate(sessionId).updateSettings(workingDir, permissionMode);
+    public SessionState updateSettings(String sessionId, String workingDir, String permissionMode, String runMode) {
+        return runtimeSessions.getOrCreate(sessionId).updateSettings(workingDir, permissionMode, runMode);
     }
 
     /**
@@ -67,7 +67,7 @@ public class RuntimeHost {
                         record.title(),
                         record.createdAt(),
                         record.updatedAt(),
-                        record.transcriptPath()
+                        record.journalPath()
                 ))
                 .toList();
     }
@@ -78,17 +78,7 @@ public class RuntimeHost {
     public List<TranscriptItem> transcriptEntries(String sessionId) {
         // 历史读取先触发惰性恢复，避免把悬挂 Run/Tool 原始状态直接暴露给控制面。
         runtimeSessions.getOrCreate(sessionId);
-        return persistedSessions.transcript(sessionId).stream()
-                .map(entry -> new TranscriptItem(
-                        entry.id(),
-                        entry.sessionId(),
-                        entry.role(),
-                        entry.content(),
-                        entry.toolUseId(),
-                        entry.toolName(),
-                        entry.timestamp()
-                ))
-                .toList();
+        return persistedSessions.transcript(sessionId);
     }
 
     /**

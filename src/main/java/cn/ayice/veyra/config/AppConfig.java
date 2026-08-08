@@ -284,15 +284,32 @@ public class AppConfig {
     public String getWorkspace() { return System.getProperty("user.dir");}
 
     /**
-     * 返回会话记录和压缩恢复数据使用的兼容存储根目录。
+     * 返回 Veyra 所有内部持久化内容共享的根目录。
      */
-    public String getMemoryDir() { return str("memory", "dir", "~/.mycc");}
+    public String getStorageRoot() {
+        return str("storage", "root", "~/.veyra");
+    }
 
     /**
-     * 返回跨会话长期记忆的独立存储根目录。
+     * 返回会话 Journal 和恢复投影的存储根目录。
+     */
+    public String getMemoryDir() {
+        return storageSubdirectory("sessions");
+    }
+
+    /**
+     * 返回跨会话长期记忆的存储根目录。
      */
     public String getLongTermMemoryDir() {
-        return str("memory", "longTermDir", "~/.veyra/memory");
+        return storageSubdirectory("memory");
+    }
+
+    /**
+     * 在统一持久化根目录下派生指定能力的固定子目录。
+     */
+    private String storageSubdirectory(String name) {
+        String root = getStorageRoot().trim().replaceAll("[\\\\/]+$", "");
+        return root + "/" + name;
     }
 
     /**

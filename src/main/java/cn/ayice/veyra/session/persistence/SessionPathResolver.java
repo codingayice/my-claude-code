@@ -8,8 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 根据记忆根目录和工作区路径计算会话 transcript 的落盘位置。
- * 目录结构对齐 Claude Code 的核心形态：每个 workspace 一个 projects 子目录，每个 session 一个 JSONL 文件。
+ * 根据会话存储根目录和工作区路径计算会话持久化文件的落盘位置。
+ * 每个 workspace 使用一个 projects 子目录，每个 session 使用独立 JSONL 文件。
  */
 public class SessionPathResolver {
 
@@ -24,21 +24,14 @@ public class SessionPathResolver {
     }
 
     /**
-     * 返回当前工作区隔离后的 transcript 存储目录。
+     * 返回当前工作区隔离后的 Journal 存储目录。
      */
     public Path projectDir() {
         return rootDir.resolve("projects").resolve(workspaceKey);
     }
 
     /**
-     * 校验会话标识并返回其 JSONL transcript 文件路径。
-     */
-    public Path transcriptPath(String sessionId) {
-        return projectDir().resolve(sessionId + ".jsonl");
-    }
-
-    /**
-     * 返回与旧 transcript 物理隔离的新 Durable Journal 路径。
+     * 返回当前会话唯一的 Durable Journal 路径。
      */
     public Path journalPath(String sessionId) {
         return projectDir().resolve(sessionId + ".journal.jsonl");
@@ -48,7 +41,7 @@ public class SessionPathResolver {
      * 将路径开头的波浪号展开为当前用户主目录。
      */
     private static Path expandHome(String memoryDir) {
-        String raw = memoryDir == null || memoryDir.isBlank() ? "~/.mycc" : memoryDir;
+        String raw = memoryDir == null || memoryDir.isBlank() ? "~/.veyra/sessions" : memoryDir;
         if (raw.equals("~")) {
             return Paths.get(System.getProperty("user.home"));
         }

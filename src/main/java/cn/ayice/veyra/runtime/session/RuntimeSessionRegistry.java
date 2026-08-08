@@ -1,9 +1,6 @@
 package cn.ayice.veyra.runtime.session;
 
 import cn.ayice.veyra.session.persistence.SessionRecord;
-import cn.ayice.veyra.session.persistence.TranscriptEntry;
-import cn.ayice.veyra.session.persistence.TranscriptRestorer;
-import cn.ayice.veyra.session.persistence.TranscriptStore;
 import cn.ayice.veyra.session.persistence.SessionJournalStore;
 import cn.ayice.veyra.session.recovery.SessionRecovery;
 import dev.langchain4j.data.message.ChatMessage;
@@ -13,31 +10,14 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 活动会话运行时的注册表，也是 transcript 恢复为运行时对象的边界。
+ * 活动会话运行时的注册表，也是 Journal 恢复为运行时对象的边界。
  */
 public class RuntimeSessionRegistry implements AutoCloseable {
 
-    private final TranscriptStore transcriptStore;
-    private final TranscriptRestorer transcriptRestorer;
     private final Factory runtimeCreator;
     private final SessionJournalStore journalStore;
     private final SessionRecovery sessionRecovery;
     private final ConcurrentHashMap<String, SessionRuntime> sessions = new ConcurrentHashMap<>();
-
-    /**
-     * 使用转录存储、恢复器和运行时工厂创建会话注册表。
-     */
-    public RuntimeSessionRegistry(
-            TranscriptStore transcriptStore,
-            TranscriptRestorer transcriptRestorer,
-            Factory runtimeCreator
-    ) {
-        this.transcriptStore = transcriptStore;
-        this.transcriptRestorer = transcriptRestorer;
-        this.runtimeCreator = runtimeCreator;
-        this.journalStore = null;
-        this.sessionRecovery = null;
-    }
 
     /**
      * 使用 Durable Journal 和幂等恢复器创建生产注册表。
@@ -47,8 +27,6 @@ public class RuntimeSessionRegistry implements AutoCloseable {
             SessionRecovery sessionRecovery,
             Factory runtimeCreator
     ) {
-        this.transcriptStore = null;
-        this.transcriptRestorer = null;
         this.runtimeCreator = runtimeCreator;
         this.journalStore = journalStore;
         this.sessionRecovery = sessionRecovery;
@@ -66,7 +44,7 @@ public class RuntimeSessionRegistry implements AutoCloseable {
     }
 
     /**
-     * 返回活动会话；未激活时原子地从 transcript 恢复并注册。
+     * 返回活动会话；未激活时原子地从 Journal 恢复并注册。
      */
     public SessionRuntime getOrCreate(String sessionId) {
         return sessions.computeIfAbsent(sessionId, this::restoreSession);
@@ -83,30 +61,19 @@ public class RuntimeSessionRegistry implements AutoCloseable {
      * 返回存储中已有的会话摘要。
      */
     List<SessionRecord> listSessions() {
-        return journalStore == null ? transcriptStore.listSessions() : journalStore.listSessions();
+        return journalStore.listSessions();
     }
 
     /**
-     * 读取指定会话的全部 transcript 条目。
-     */
-    List<TranscriptEntry> transcriptEntries(String sessionId) {
-        return transcriptStore.read(sessionId);
-    }
-
-    /**
-     * 将持久化 transcript 转换为模型历史并创建新的活动运行时。
+     * 将持久化 Journal 投影为模型历史并创建新的活动运行时。
      */
     private SessionRuntime restoreSession(String sessionId) {
-        if (sessionRecovery != null) {
-            SessionRecovery.RecoveryResult recovery = sessionRecovery.recover(sessionId);
-            SessionRuntime restored = runtimeCreator.create(sessionId, recovery);
-            if (!recovery.persisted()) {
-                restored.persistCreation();
-            }
-            return restored;
+        SessionRecovery.RecoveryResult recovery = sessionRecovery.recover(sessionId);
+        SessionRuntime restored = runtimeCreator.create(sessionId, recovery);
+        if (!recovery.persisted()) {
+            restored.persistCreation();
         }
-        List<TranscriptEntry> entries = transcriptStore.read(sessionId);
-        return runtimeCreator.create(sessionId, transcriptRestorer.restore(entries));
+        return restored;
     }
 
     /**

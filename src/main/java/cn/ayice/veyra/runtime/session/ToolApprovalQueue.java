@@ -1,6 +1,6 @@
 package cn.ayice.veyra.runtime.session;
 
-import cn.ayice.veyra.session.event.SessionEventStream;
+import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import org.slf4j.Logger;
@@ -21,11 +21,11 @@ public class ToolApprovalQueue extends ToolExecutionConfirmation {
 
     private static final Logger log = LoggerFactory.getLogger(ToolApprovalQueue.class);
 
-    private final SessionEventStream events;
+    private final AgentEventSink events;
     private final ConcurrentHashMap<String, CompletableFuture<Choice>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PendingApproval> approvals = new ConcurrentHashMap<>();
 
-    public ToolApprovalQueue(SessionEventStream events) {
+    public ToolApprovalQueue(AgentEventSink events) {
         this.events = events;
     }
 
@@ -86,11 +86,11 @@ public class ToolApprovalQueue extends ToolExecutionConfirmation {
             case "allow_once", "allow" -> Choice.ALLOW_ONCE;
             default -> Choice.DENY;
         };
-        future.complete(choice);
         events.emit("permission.resolved", Map.of(
                 "approvalId", approvalId,
                 "decision", decision
         ));
+        future.complete(choice);
         return true;
     }
 

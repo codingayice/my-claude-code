@@ -9,6 +9,35 @@ export type AgentSessionResponse = {
   sessionId: string
   workingDir: string
   permissionMode: AgentPermissionMode
+  runMode: AgentRunMode
+  lastRunStatus?: string | null
+}
+
+export type AgentSessionRecord = {
+  sessionId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  journalPath: string
+}
+
+export type AgentTranscriptEntry = {
+  id: string
+  sessionId: string
+  role: string
+  content: string
+  toolUseId?: string | null
+  toolName?: string | null
+  timestamp: string
+}
+
+export type AgentStableEvent = {
+  seq: number
+  sessionId: string
+  runId?: string | null
+  type: string
+  timestampMs: number
+  payload: Record<string, unknown>
 }
 
 export type AgentRunResponse = {
@@ -90,6 +119,27 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
         method: "POST",
       }),
 
+    listSessions: () =>
+      requestJson<{ items: AgentSessionRecord[] }>(fetcher, "/sessions"),
+
+    session: (sessionId: string) =>
+      requestJson<AgentSessionResponse>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}`
+      ),
+
+    transcript: (sessionId: string) =>
+      requestJson<{ items: AgentTranscriptEntry[] }>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/transcript`
+        ),
+
+    history: (sessionId: string) =>
+      requestJson<{ items: AgentStableEvent[] }>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/history`
+      ),
+
     createRun: (sessionId: string, input: string, mode: AgentRunMode) =>
       requestJson<AgentRunResponse>(
         fetcher,
@@ -119,6 +169,7 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
       settings: {
         workingDir: string
         permissionMode: AgentPermissionMode
+        runMode: AgentRunMode
       }
     ) =>
       requestJson<AgentSessionResponse>(

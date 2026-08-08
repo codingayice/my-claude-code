@@ -11,7 +11,7 @@ import cn.ayice.veyra.compaction.SummaryCompactor;
 import cn.ayice.veyra.compaction.MicroCompactor;
 import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
-import cn.ayice.veyra.session.persistence.TranscriptRecorder;
+import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.runtime.model.ModelCallExecutor;
@@ -63,7 +63,7 @@ public class AgentLoop {
     private final SessionSummaryState summaryState;
     private final MemoryExtractionCoordinator memoryExtractionCoordinator;
     private final long modelCallTimeoutMs;
-    private final TranscriptRecorder transcriptRecorder;
+    private final JournalMessageRecorder messageRecorder;
 
     private PermissionContext permissionContext;
     private List<WorkingMessage> history;
@@ -89,7 +89,7 @@ public class AgentLoop {
             long modelCallTimeoutMs,
             MemoryExtractionCoordinator memoryExtractionCoordinator,
             List<ChatMessage> initialHistory,
-            TranscriptRecorder transcriptRecorder,
+            JournalMessageRecorder messageRecorder,
             Executor toolExecutor
     ) {
         if (modelCallTimeoutMs <= 0) {
@@ -118,7 +118,7 @@ public class AgentLoop {
         this.maxRounds = maxRounds;
         this.memoryExtractionCoordinator = memoryExtractionCoordinator;
         this.modelCallTimeoutMs = modelCallTimeoutMs;
-        this.transcriptRecorder = transcriptRecorder;
+        this.messageRecorder = messageRecorder;
         this.history = new ArrayList<>(initialHistory.size());
         for (ChatMessage message : initialHistory) {
             this.history.add(WorkingMessage.original(++nextSequence, message));
@@ -127,7 +127,7 @@ public class AgentLoop {
                 toolEngine,
                 permissionContextStore,
                 this.events,
-                transcriptRecorder,
+                messageRecorder,
                 memoryExtractionCoordinator,
                 toolExecutor
         );
@@ -169,7 +169,7 @@ public class AgentLoop {
                 .appendOriginal(UserMessage.from(input))
                 .markStable();
         contextBuilder.prefetchMemory(input);
-        transcriptRecorder.record(UserMessage.from(input));
+        messageRecorder.record(UserMessage.from(input));
         boolean promptTooLongCompactionAttempted = false;
         boolean mainAgentWroteMemory = false;
 
@@ -188,7 +188,7 @@ public class AgentLoop {
                         formatNotificationBlock("task_notifications", notifications)
                 );
                 state = state.appendOriginal(notificationMessage).markStable();
-                transcriptRecorder.record(notificationMessage);
+                messageRecorder.record(notificationMessage);
             }
 
             CompactionService.PreparedWorkingTurn prepared;
@@ -302,7 +302,7 @@ public class AgentLoop {
 
             state = state.appendOriginal(aiMessage);
             completedModelRounds++;
-            transcriptRecorder.record(aiMessage);
+            messageRecorder.record(aiMessage);
             events.assistantCompleted(aiMessage);
 
             if (!aiMessage.hasToolExecutionRequests()) {
@@ -342,7 +342,7 @@ public class AgentLoop {
                         "<system-reminder>Todo 列表仍有未完成项。请继续处理或关闭这些事项后再进入下一步。</system-reminder>"
                 );
                 state = state.appendOriginal(reminder).markStable();
-                transcriptRecorder.record(reminder);
+                messageRecorder.record(reminder);
             }
             if (!todoWriteUsed && nextRound >= TODO_REMINDER_GRACE_ROUNDS
                     && nextRound % TODO_REMINDER_GRACE_ROUNDS == 0
@@ -351,7 +351,7 @@ public class AgentLoop {
                         "<system-reminder>你还没有使用 TodoWrite 工具规划任务。如果当前任务涉及 3 个以上独立步骤，请先用 TodoWrite 创建任务清单，再逐步执行。</system-reminder>"
                 );
                 state = state.appendOriginal(reminder).markStable();
-                transcriptRecorder.record(reminder);
+                messageRecorder.record(reminder);
             }
             if (maxRounds > 0 && nextRound > maxRounds) {
                 state = state.withAiMessage(aiMessage)

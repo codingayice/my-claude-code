@@ -760,9 +760,10 @@ remember 顺序：
 ## 17. 配置
 
 ```yaml
+storage:
+  root: ~/.veyra
+
 memory:
-  dir: ~/.mycc
-  longTermDir: ~/.veyra/memory
   autoExtractionEnabled: true
   maxTopicBytes: 16384
   maxIndexLines: 200
@@ -778,7 +779,8 @@ memory:
 配置规则：
 
 - 所有数值在 `AppConfig` 边界校验，非法值启动失败，不在业务流程中静默使用默认值。
-- `memory.dir` 继续保存现有 transcript 和会话压缩摘要，`memory.longTermDir` 只保存跨会话长期记忆。
+- `storage.root` 是唯一持久化根目录；会话数据固定派生到 `sessions/`，长期记忆固定派生到 `memory/`。
+- 各能力不得再提供可逃逸到 `storage.root` 之外的独立持久化目录配置。
 - `/memory off` 通过长期记忆目录下的 `.disabled` 标记关闭召回、显式写入和自动提取，不影响 transcript 和上下文压缩。
 - `autoExtractionEnabled=false` 只关闭后台提取，显式记住、忘记和召回仍可工作。
 - 记忆关闭时，`MemoryPolicySection` 可以保留，但不注入任何动态 memory-context。
@@ -871,7 +873,7 @@ remember、forget、rebuild 成功或部分成功后必须使对应 namespace �
 2. 不读取、转换或复制旧 topic 和旧 `MEMORY.md`。
 3. 不创建迁移报告或迁移完成标记。
 4. 旧目录中的文件保持原样，但不会被新系统召回或更新。
-5. 新系统只使用 `memory.longTermDir` 指向的新目录结构。
+5. 新系统只使用 `storage.root/memory` 指向的新目录结构。
 
 ## 23. 测试策略
 

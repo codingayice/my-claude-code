@@ -8,7 +8,7 @@ import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionMode;
 import cn.ayice.veyra.session.event.AgentEventSink;
-import cn.ayice.veyra.session.persistence.TranscriptRecorder;
+import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.state.TodoManager;
@@ -124,7 +124,7 @@ class AgentLoopRecoveryTest {
             Path tempDir,
             long modelCallTimeoutMs,
             List<ChatMessage> initialHistory,
-            TranscriptRecorder transcriptRecorder
+            JournalMessageRecorder transcriptRecorder
     ) {
         AppConfig config = new AppConfig("__missing_agent_loop_recovery_test_config__.yaml");
         ToolCatalog catalog = ToolCatalog.create(List.of(), new FileStateCache());
@@ -178,7 +178,7 @@ class AgentLoopRecoveryTest {
         }
     }
 
-    private static final class RecordingTranscriptRecorder implements TranscriptRecorder {
+    private static final class RecordingTranscriptRecorder implements JournalMessageRecorder {
         private final List<ChatMessage> messages = new ArrayList<>();
 
         @Override

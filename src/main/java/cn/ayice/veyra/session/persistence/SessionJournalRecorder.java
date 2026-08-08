@@ -11,7 +11,7 @@ import java.util.Objects;
 /**
  * 一个活动 Session 独占的稳定事实记录器。
  */
-public final class SessionJournalRecorder implements TranscriptRecorder {
+public final class SessionJournalRecorder implements JournalMessageRecorder {
 
     private final String sessionId;
     private final SessionJournalStore store;
@@ -29,18 +29,20 @@ public final class SessionJournalRecorder implements TranscriptRecorder {
     }
 
     /** 持久化空 Session 和初始设置。 */
-    public synchronized void recordSessionCreated(Path workingDir, String permissionMode) {
+    public synchronized void recordSessionCreated(Path workingDir, String permissionMode, String runMode) {
         store.append(sessionId, null, SessionJournalTypes.SESSION_CREATED, Map.of(
                 "workingDir", workingDir.toAbsolutePath().normalize().toString(),
-                "permissionMode", permissionMode
+                "permissionMode", permissionMode,
+                "runMode", runMode
         ), true);
     }
 
     /** 持久化完整 Session 设置快照。 */
-    public synchronized void recordSettings(Path workingDir, String permissionMode) {
+    public synchronized void recordSettings(Path workingDir, String permissionMode, String runMode) {
         store.append(sessionId, null, SessionJournalTypes.SESSION_SETTINGS_UPDATED, Map.of(
                 "workingDir", workingDir.toAbsolutePath().normalize().toString(),
-                "permissionMode", permissionMode
+                "permissionMode", permissionMode,
+                "runMode", runMode
         ), true);
     }
 
@@ -84,22 +86,15 @@ public final class SessionJournalRecorder implements TranscriptRecorder {
         ), true);
     }
 
-    /** 持久化子 Agent 或后台任务开始事实。 */
-    public synchronized void recordTaskStarted(String taskId, String taskType, String description) {
-        store.append(sessionId, currentRunId, SessionJournalTypes.TASK_STARTED, Map.of(
-                "taskId", taskId,
-                "taskType", taskType,
-                "description", description == null ? "" : description
-        ), true);
-    }
-
-    /** 持久化任务唯一终态。 */
-    public synchronized void recordTaskFinished(String taskId, String status, String content) {
-        store.append(sessionId, currentRunId, SessionJournalTypes.TASK_FINISHED, Map.of(
-                "taskId", taskId,
-                "status", status,
-                "content", content == null ? "" : content
-        ), true);
+    /**
+     * 持久化影响冷加载 UI 的稳定运行事件。消息、工具结果和 Run 生命周期由各自的
+     * 专用写入点负责，避免同一事实重复进入 Journal。
+     */
+    public synchronized void recordStableEvent(String type, Map<String, Object> payload) {
+        if (!isStableUiEvent(type)) {
+            return;
+        }
+        store.append(sessionId, currentRunId, type, payload, true);
     }
 
     /** 在会话摘要发布到内存前持久化不可变快照。 */
@@ -124,5 +119,28 @@ public final class SessionJournalRecorder implements TranscriptRecorder {
     /** 返回当前尚未终止的 Run 标识。 */
     public synchronized String currentRunId() {
         return currentRunId;
+    }
+
+    /** 判断实时事件是否属于必须持久化的稳定 UI 事实。 */
+    private static boolean isStableUiEvent(String type) {
+        return switch (type) {
+            case SessionJournalTypes.TOOL_CALL_STARTED,
+                 SessionJournalTypes.PERMISSION_REQUESTED,
+                 SessionJournalTypes.PERMISSION_RESOLVED,
+                 SessionJournalTypes.PERMISSION_INTERRUPTED,
+                 SessionJournalTypes.TODO_UPDATED,
+                 SessionJournalTypes.TASK_STARTED,
+                 SessionJournalTypes.TASK_STEP_STARTED,
+                 SessionJournalTypes.TASK_ASSISTANT_MESSAGE_COMPLETED,
+                 SessionJournalTypes.TASK_TOOL_CALL_STARTED,
+                 SessionJournalTypes.TASK_TOOL_CALL_COMPLETED,
+                 SessionJournalTypes.TASK_TOOL_CALL_REJECTED,
+                 SessionJournalTypes.TASK_PERMISSION_REQUESTED,
+                 SessionJournalTypes.TASK_PERMISSION_RESOLVED,
+                 SessionJournalTypes.TASK_COMPLETED,
+                 SessionJournalTypes.TASK_FAILED,
+                 SessionJournalTypes.TASK_KILLED -> true;
+            default -> false;
+        };
     }
 }

@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -6,7 +7,8 @@ use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+use tauri_plugin_log::{Target, TargetKind};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -20,6 +22,53 @@ fn project_root() -> Result<PathBuf, String> {
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .ok_or_else(|| "Failed to resolve Veyra project root".to_string())
+}
+
+fn veyra_root() -> Result<PathBuf, String> {
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .map(|home| home.join(".veyra"))
+        .ok_or_else(|| "Failed to resolve the user home directory".to_string())
+}
+
+fn preferences_path() -> Result<PathBuf, String> {
+    Ok(veyra_root()?.join("preferences.json"))
+}
+
+fn read_preferences() -> Result<HashMap<String, String>, String> {
+    let path = preferences_path()?;
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read Veyra preferences: {error}"))?;
+    serde_json::from_str(&content)
+        .map_err(|error| format!("Failed to parse Veyra preferences: {error}"))
+}
+
+#[tauri::command]
+fn preference_get(key: String) -> Result<Option<String>, String> {
+    Ok(read_preferences()?.remove(&key))
+}
+
+#[tauri::command]
+fn preference_set(key: String, value: String) -> Result<(), String> {
+    if key.is_empty() || key.len() > 128 {
+        return Err("Invalid preference key".to_string());
+    }
+    let path = preferences_path()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Failed to resolve Veyra preferences directory".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Failed to create Veyra preferences directory: {error}"))?;
+    let mut preferences = read_preferences()?;
+    preferences.insert(key, value);
+    let content = serde_json::to_vec_pretty(&preferences)
+        .map_err(|error| format!("Failed to serialize Veyra preferences: {error}"))?;
+    fs::write(&path, content)
+        .map_err(|error| format!("Failed to write Veyra preferences: {error}"))
 }
 
 #[derive(Serialize)]
@@ -259,16 +308,27 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_start,
             agent_stop,
-            read_resource_tree
+            read_resource_tree,
+            preference_get,
+            preference_set
         ])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
+                let log_dir = app.path().home_dir()?.join(".veyra").join("logs");
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
                         .level(log::LevelFilter::Info)
+                        .clear_targets()
+                        .targets([
+                            Target::new(TargetKind::Stdout),
+                            Target::new(TargetKind::Folder {
+                                path: log_dir,
+                                file_name: Some("veyra-desktop".into()),
+                            }),
+                        ])
                         .build(),
                 )?;
             }

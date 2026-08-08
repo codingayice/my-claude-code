@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import * as React from "react"
+import { invoke } from "@tauri-apps/api/core"
 
 type Theme = "dark" | "light" | "system"
 type ResolvedTheme = "dark" | "light"
@@ -29,6 +30,14 @@ function isTheme(value: string | null): value is Theme {
   }
 
   return THEME_VALUES.includes(value as Theme)
+}
+
+async function readPreference(key: string) {
+  return invoke<string | null>("preference_get", { key })
+}
+
+async function writePreference(key: string, value: string) {
+  await invoke("preference_set", { key, value })
 }
 
 function getSystemTheme(): ResolvedTheme {
@@ -84,18 +93,26 @@ export function ThemeProvider({
   disableTransitionOnChange = true,
   ...props
 }: ThemeProviderProps) {
-  const [theme, setThemeState] = React.useState<Theme>(() => {
-    const storedTheme = localStorage.getItem(storageKey)
-    if (isTheme(storedTheme)) {
-      return storedTheme
-    }
+  const [theme, setThemeState] = React.useState<Theme>(defaultTheme)
 
-    return defaultTheme
-  })
+  React.useEffect(() => {
+    let active = true
+    void readPreference(storageKey)
+      .then((storedTheme) => {
+        if (active && isTheme(storedTheme)) {
+          setThemeState(storedTheme)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      active = false
+    }
+  }, [storageKey])
 
   const setTheme = React.useCallback(
     (nextTheme: Theme) => {
-      localStorage.setItem(storageKey, nextTheme)
+      void writePreference(storageKey, nextTheme).catch(() => undefined)
       setThemeState(nextTheme)
     },
     [storageKey]
@@ -167,7 +184,7 @@ export function ThemeProvider({
                 ? "light"
                 : "dark"
 
-        localStorage.setItem(storageKey, nextTheme)
+        void writePreference(storageKey, nextTheme).catch(() => undefined)
         return nextTheme
       })
     }
@@ -178,31 +195,6 @@ export function ThemeProvider({
       window.removeEventListener("keydown", handleKeyDown)
     }
   }, [storageKey])
-
-  React.useEffect(() => {
-    const handleStorageChange = (event: StorageEvent) => {
-      if (event.storageArea !== localStorage) {
-        return
-      }
-
-      if (event.key !== storageKey) {
-        return
-      }
-
-      if (isTheme(event.newValue)) {
-        setThemeState(event.newValue)
-        return
-      }
-
-      setThemeState(defaultTheme)
-    }
-
-    window.addEventListener("storage", handleStorageChange)
-
-    return () => {
-      window.removeEventListener("storage", handleStorageChange)
-    }
-  }, [defaultTheme, storageKey])
 
   const value = React.useMemo(
     () => ({

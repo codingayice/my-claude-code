@@ -26,8 +26,6 @@ import cn.ayice.veyra.subagent.SubagentRuntime;
 import cn.ayice.veyra.subagent.SubagentService;
 import cn.ayice.veyra.tool.background.BackgroundManager;
 import cn.ayice.veyra.runtime.chat.ChatLoop;
-import cn.ayice.veyra.session.persistence.StoreBackedTranscriptRecorder;
-import cn.ayice.veyra.session.persistence.TranscriptStore;
 import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
 import cn.ayice.veyra.session.persistence.SessionJournalStore;
 import cn.ayice.veyra.session.recovery.SessionRecovery;
@@ -69,50 +67,12 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
     private static final Logger log = LoggerFactory.getLogger(SessionRuntimeFactory.class);
 
     private final AppConfig config;
-    private final TranscriptStore transcriptStore;
     private final SessionJournalStore journalStore;
     private final Executor runExecutor;
     private final Executor taskExecutor;
     private final Executor ioExecutor;
     private final AIService ai;
     private final MemoryService memoryService;
-
-    /**
-     * 使用全局配置、转录存储和受 Spring 管理的线程池创建会话工厂。
-     */
-    public SessionRuntimeFactory(
-            AppConfig config,
-            TranscriptStore transcriptStore,
-            Executor runExecutor,
-            Executor taskExecutor,
-            Executor ioExecutor
-    ) {
-        this.config = config;
-        this.transcriptStore = transcriptStore;
-        this.journalStore = null;
-        this.runExecutor = runExecutor;
-        this.taskExecutor = taskExecutor;
-        this.ioExecutor = ioExecutor;
-        this.ai = new AIService(config);
-        String workspace = canonicalWorkspace(config.getWorkspace());
-        MemoryPaths paths = new MemoryPaths(config.getLongTermMemoryDir(), workspace);
-        MemoryFileStore store = new MemoryFileStore(
-                paths,
-                config.getMemoryMaxTopicBytes(),
-                config.getMemoryMaxIndexLines(),
-                config.getMemoryMaxIndexBytes(),
-                config.getMemoryMaxScannedTopics()
-        );
-        this.memoryService = new MemoryService(
-                store,
-                ai,
-                ioExecutor,
-                config.getMemoryMaxAlwaysContextBytes(),
-                config.getMemoryMaxRecallItems(),
-                config.getMemoryMaxRecalledTopicBytes(),
-                config.getMemoryMaxTurnContextBytes()
-        );
-    }
 
     /**
      * 使用 Durable Session Journal 创建生产运行时工厂。
@@ -125,7 +85,6 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
             Executor ioExecutor
     ) {
         this.config = config;
-        this.transcriptStore = null;
         this.journalStore = journalStore;
         this.runExecutor = runExecutor;
         this.taskExecutor = taskExecutor;
@@ -158,7 +117,8 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
     public SessionRuntime create(String sessionId, List<ChatMessage> initialHistory) {
         SessionSettings settings = new SessionSettings(
                 Path.of(config.getWorkspace()),
-                config.getPermissionMode()
+                config.getPermissionMode(),
+                "chat"
         );
         return createRuntime(sessionId, initialHistory, null, settings, "idle");
     }
@@ -185,17 +145,13 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
     ) {
         // 首先创建会话独占的事件、审批、权限和转录组件，避免可变状态跨会话共享。
         SessionEventStream events = new SessionEventStream(sessionId);
-        ToolApprovalQueue confirmation = new ToolApprovalQueue(events);
+        SessionJournalRecorder journalRecorder = new SessionJournalRecorder(sessionId, journalStore);
+        SessionAgentEventSink eventSink = new SessionAgentEventSink(events, journalRecorder);
+        ToolApprovalQueue confirmation = new ToolApprovalQueue(eventSink);
         PermissionContextStore permissionContextStore = new PermissionContextStore(
                 buildPermissionContext(restoredSettings)
         );
-        SessionJournalRecorder journalRecorder = journalStore == null
-                ? null
-                : new SessionJournalRecorder(sessionId, journalStore);
-        SessionAgentEventSink eventSink = new SessionAgentEventSink(events, journalRecorder);
-        cn.ayice.veyra.session.persistence.TranscriptRecorder recorder = journalRecorder == null
-                ? new StoreBackedTranscriptRecorder(sessionId, transcriptStore)
-                : journalRecorder;
+        cn.ayice.veyra.session.persistence.JournalMessageRecorder recorder = journalRecorder;
 
         FileStateCache fileStateCache = new FileStateCache();
         SubagentRuntime agentRuntime = new SubagentRuntime(
@@ -206,7 +162,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 permissionContextStore,
                 this::createSubagentToolCatalog
         );
-        BiConsumer<String, Map<String, Object>> taskEvents = durableTaskEvents(eventSink, journalRecorder);
+        BiConsumer<String, Map<String, Object>> taskEvents = eventSink::emit;
         SubagentService subagentService = new SubagentService(agentRuntime, taskExecutor, taskEvents);
         BackgroundManager backgroundManager = new BackgroundManager(ioExecutor, taskEvents);
         TodoManager todoManager = new TodoManager(eventSink::emit);
@@ -265,7 +221,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                         initialHistory == null ? 0L : initialHistory.size()
                 )
                 : null;
-        // AgentLoop 与 ChatLoop 共享模型和 transcript，但保持不同的执行策略和历史副本。
+        // AgentLoop 与 ChatLoop 共享模型消息 Journal 出口，但保持不同的执行策略和历史副本。
         AgentLoop agentLoop = new AgentLoop(
                 ai,
                 toolCatalog,
@@ -309,6 +265,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 ),
                 runExecutor,
                 journalRecorder,
+                restoredSettings.runMode(),
                 lastRunStatus
         );
     }
@@ -349,32 +306,6 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 .workingDir(settings.workingDir())
                 .addAllowedDirectory(settings.workingDir())
                 .build();
-    }
-
-    /** 将任务稳定事实先写 Journal，再转发到当前进程事件流。 */
-    private static BiConsumer<String, Map<String, Object>> durableTaskEvents(
-            SessionAgentEventSink eventSink,
-            SessionJournalRecorder recorder
-    ) {
-        return (type, payload) -> {
-            if (recorder != null) {
-                String taskId = String.valueOf(payload.getOrDefault("taskId", ""));
-                if ("task.started".equals(type)) {
-                    recorder.recordTaskStarted(
-                            taskId,
-                            String.valueOf(payload.getOrDefault("taskType", "unknown")),
-                            String.valueOf(payload.getOrDefault("description", ""))
-                    );
-                } else if (type.startsWith("task.")) {
-                    recorder.recordTaskFinished(
-                            taskId,
-                            String.valueOf(payload.getOrDefault("status", type.substring("task.".length()))),
-                            String.valueOf(payload.getOrDefault("content", ""))
-                    );
-                }
-            }
-            eventSink.emit(type, payload);
-        };
     }
 
     /**

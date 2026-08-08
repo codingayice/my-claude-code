@@ -2,7 +2,7 @@ package cn.ayice.veyra.boot;
 
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.session.persistence.SessionPathResolver;
-import cn.ayice.veyra.session.persistence.TranscriptStore;
+import cn.ayice.veyra.session.persistence.SessionJournalStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -21,7 +21,7 @@ class SessionRuntimeFactoryMemoryPathTest {
         java.nio.file.Files.createDirectories(workspace);
         Path memoryRoot = tempDir.resolve("mycc-root");
         TestConfig config = new TestConfig(memoryRoot, workspace.resolve(".").toString());
-        TranscriptStore store = new TranscriptStore(
+        SessionJournalStore store = new SessionJournalStore(
                 new SessionPathResolver(memoryRoot.toString(), workspace.toString())
         );
 

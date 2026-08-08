@@ -10,6 +10,9 @@ model:
   maxTokens: 8192
   timeoutSeconds: 120
 
+storage:
+  root: ~/.veyra
+
 context:
   maxRounds: 0
   maxContextTokens: 128000
@@ -20,8 +23,6 @@ context:
   contextDangerRatio: 0.9
 
 memory:
-  dir: ~/.mycc
-  longTermDir: ~/.veyra/memory
   autoExtractionEnabled: true
   maxTopicBytes: 16384
   maxIndexLines: 200

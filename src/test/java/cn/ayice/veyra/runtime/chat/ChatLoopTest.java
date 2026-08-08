@@ -2,7 +2,7 @@ package cn.ayice.veyra.runtime.chat;
 
 import cn.ayice.veyra.llm.ChatStreamer;
 
-import cn.ayice.veyra.session.persistence.TranscriptRecorder;
+import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -101,7 +101,7 @@ class ChatLoopTest {
     private record Event(String type, Map<String, Object> payload) {
     }
 
-    private static final class RecordingTranscriptRecorder implements TranscriptRecorder {
+    private static final class RecordingTranscriptRecorder implements JournalMessageRecorder {
         private final List<ChatMessage> messages = new ArrayList<>();
 
         @Override

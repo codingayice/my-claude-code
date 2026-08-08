@@ -356,6 +356,7 @@ reason = process_terminated
 
 ## 10. JSONL 崩溃安全
 
+- 所有会话持久化内容位于 `~/.veyra/sessions/projects/{workspace-key}/`；不得写入工作区、进程当前目录或其他用户数据目录。
 - UTF-8，无 BOM，每条记录独占一行。
 - 新格式使用 `{sessionId}.journal.jsonl`，与旧 `{sessionId}.jsonl` transcript 物理隔离。
 - Store 在单进程内串行分配 Session sequence 并追加。

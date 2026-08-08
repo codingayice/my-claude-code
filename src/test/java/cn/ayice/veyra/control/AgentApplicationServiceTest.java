@@ -10,9 +10,11 @@ import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
 import cn.ayice.veyra.session.persistence.SessionPathResolver;
-import cn.ayice.veyra.session.persistence.TranscriptEntry;
-import cn.ayice.veyra.session.persistence.TranscriptRestorer;
-import cn.ayice.veyra.session.persistence.TranscriptStore;
+import cn.ayice.veyra.session.persistence.JournalMessageCodec;
+import cn.ayice.veyra.session.persistence.SessionJournalStore;
+import cn.ayice.veyra.session.recovery.SessionRecovery;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.UserMessage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -29,19 +31,23 @@ class AgentApplicationServiceTest {
     @Test
     void createsSessionsAndReadsPersistedTranscriptThroughDtoBoundary() throws Exception {
         AppConfig config = config();
-        TranscriptStore store = new TranscriptStore(
+        SessionJournalStore store = new SessionJournalStore(
                 new SessionPathResolver(config.getMemoryDir(), config.getWorkspace())
         );
         SessionRuntimeFactory factory = new SessionRuntimeFactory(
                 config, store, Runnable::run, Runnable::run, Runnable::run);
-        RuntimeSessionRegistry sessions = new RuntimeSessionRegistry(store, new TranscriptRestorer(), factory);
+        SessionRecovery recovery = new SessionRecovery(
+                store, Path.of(config.getWorkspace()), config.getPermissionMode());
+        RuntimeSessionRegistry sessions = new RuntimeSessionRegistry(store, recovery, factory);
         RuntimeHost runtimeHost = new RuntimeHost(sessions, new SessionService(store), new RunCoordinator());
         AgentApplicationService application = new AgentApplicationService(runtimeHost);
 
         try (sessions) {
             SessionResponse created = application.createSession();
-            store.append(created.sessionId(), TranscriptEntry.user(created.sessionId(), "问题"));
-            store.append(created.sessionId(), TranscriptEntry.assistant(created.sessionId(), "回答"));
+            store.append(created.sessionId(), "run-1", "user.message.recorded",
+                    JournalMessageCodec.encode(UserMessage.from("问题")), true);
+            store.append(created.sessionId(), "run-1", "assistant.message.recorded",
+                    JournalMessageCodec.encode(AiMessage.from("回答")), true);
 
             SessionListResponse listed = application.listSessions();
             TranscriptResponse transcript = application.transcript(created.sessionId());
@@ -66,8 +72,8 @@ class AgentApplicationServiceTest {
                   timeoutSeconds: 1
                 context:
                   maxContextTokens: 128000
-                memory:
-                  dir: %s
+                storage:
+                  root: %s
                 security:
                   workspace: %s
                 permission:

@@ -8,6 +8,6 @@ public record SessionRecordResponse(
         String title,
         String createdAt,
         String updatedAt,
-        String transcriptPath
+        String journalPath
 ) {
 }

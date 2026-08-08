@@ -1,6 +1,6 @@
 package cn.ayice.veyra.runtime.agent;
 
-import cn.ayice.veyra.session.persistence.TranscriptRecorder;
+import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
 import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.tool.ToolService;
@@ -36,7 +36,7 @@ final class AgentToolCoordinator {
     private final ToolService toolEngine;
     private final PermissionContextStore permissionContextStore;
     private final AgentLoopEvents events;
-    private final TranscriptRecorder transcriptRecorder;
+    private final JournalMessageRecorder messageRecorder;
     private final MemoryExtractionCoordinator memoryExtractionCoordinator;
     private final Executor toolExecutor;
 
@@ -47,14 +47,14 @@ final class AgentToolCoordinator {
             ToolService toolEngine,
             PermissionContextStore permissionContextStore,
             AgentLoopEvents events,
-            TranscriptRecorder transcriptRecorder,
+            JournalMessageRecorder messageRecorder,
             MemoryExtractionCoordinator memoryExtractionCoordinator,
             Executor toolExecutor
     ) {
         this.toolEngine = toolEngine;
         this.permissionContextStore = permissionContextStore;
         this.events = events;
-        this.transcriptRecorder = transcriptRecorder;
+        this.messageRecorder = messageRecorder;
         this.memoryExtractionCoordinator = memoryExtractionCoordinator;
         this.toolExecutor = toolExecutor;
     }
@@ -98,7 +98,7 @@ final class AgentToolCoordinator {
                         request,
                         "<rejected>" + authorization.rejectionReason() + "</rejected>"
                 );
-                transcriptRecorder.record(resultMessage);
+                messageRecorder.record(resultMessage);
                 messages = append(messages, resultMessage);
                 events.toolRejected(request, authorization.rejectionReason());
                 continue;
@@ -139,7 +139,7 @@ final class AgentToolCoordinator {
                             request,
                             "<error>工具执行失败: " + error.getMessage() + "</error>"
                     );
-                    transcriptRecorder.record(resultMessage);
+                    messageRecorder.record(resultMessage);
                     messages = append(messages, resultMessage);
                     events.toolFailed(request, error);
                     continue;
@@ -147,7 +147,7 @@ final class AgentToolCoordinator {
                 ToolResult result = execution.result();
                 String content = execution.content();
                 ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(request, content);
-                transcriptRecorder.record(resultMessage);
+                messageRecorder.record(resultMessage);
                 messages = append(messages, resultMessage);
                 events.toolCompleted(request, result, content);
                 todoWriteUsed |= "TodoWrite".equals(request.name());
@@ -164,7 +164,7 @@ final class AgentToolCoordinator {
      * 将 durable started 事实紧邻真实工具调用写入，恢复时据此区分 NOT_EXECUTED 与 UNKNOWN。
      */
     private Execution executePersisted(Authorization authorization, PermissionContext executionContext) {
-        if (transcriptRecorder instanceof SessionJournalRecorder journal) {
+        if (messageRecorder instanceof SessionJournalRecorder journal) {
             journal.recordToolStarted(authorization.request().id(), authorization.request().name());
         }
         return toolEngine.execute(authorization, executionContext, MAIN_TOOL_POLICY);

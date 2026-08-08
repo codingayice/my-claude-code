@@ -3,13 +3,20 @@ package cn.ayice.veyra.runtime.session;
 import cn.ayice.veyra.session.PendingApprovalState;
 import cn.ayice.veyra.session.event.AgentEvent;
 import cn.ayice.veyra.session.event.AgentEventSubscriber;
+import cn.ayice.veyra.session.event.SessionAgentEventSink;
 import cn.ayice.veyra.session.event.SessionEventStream;
+import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
+import cn.ayice.veyra.session.persistence.SessionJournalStore;
+import cn.ayice.veyra.session.persistence.SessionJournalTypes;
+import cn.ayice.veyra.session.persistence.SessionPathResolver;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -22,6 +29,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ToolApprovalQueueTest {
 
+    @TempDir
+    Path tempDir;
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @AfterEach
@@ -32,7 +42,10 @@ class ToolApprovalQueueTest {
     @Test
     void publishesApprovalLifecycleAndReleasesWaitingTool() throws Exception {
         SessionEventStream events = new SessionEventStream("session-1");
-        ToolApprovalQueue approvals = new ToolApprovalQueue(events);
+        SessionJournalStore journal = new SessionJournalStore(
+                new SessionPathResolver(tempDir.toString(), tempDir.toString()));
+        SessionJournalRecorder recorder = new SessionJournalRecorder("session-1", journal);
+        ToolApprovalQueue approvals = new ToolApprovalQueue(new SessionAgentEventSink(events, recorder));
         List<AgentEvent> received = new CopyOnWriteArrayList<>();
         CountDownLatch requested = new CountDownLatch(1);
         events.addSubscriber(new AgentEventSubscriber() {
@@ -72,5 +85,9 @@ class ToolApprovalQueueTest {
         assertEquals(List.of("permission.requested", "permission.resolved"),
                 received.stream().map(AgentEvent::type).toList());
         assertEquals("tool-use-1", received.get(0).payload().get("toolUseId"));
+        assertEquals(List.of(
+                        SessionJournalTypes.PERMISSION_REQUESTED,
+                        SessionJournalTypes.PERMISSION_RESOLVED
+                ), journal.read("session-1").stream().map(entry -> entry.type()).toList());
     }
 }

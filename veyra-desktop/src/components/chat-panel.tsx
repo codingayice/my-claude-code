@@ -91,6 +91,7 @@ import {
   type AgentApprovalDecision,
   type AgentPermissionMode,
   type AgentRunMode,
+  type AgentStableEvent,
 } from '@/lib/agent-api'
 
 
@@ -111,6 +112,8 @@ type Props = {
   width?: number | string
   onDocumentGenerated?: unknown
   initialInput?: string
+  initialSessionId?: string | null
+  onSessionReady?: (sessionId: string) => void
   workspaceRoot?: string | null
 }
 
@@ -223,14 +226,7 @@ type ChatEntry = {
   segments?: AssistantSegment[]
 }
 
-type AgentEvent = {
-  seq: number
-  sessionId: string
-  runId?: string | null
-  type: string
-  timestampMs: number
-  payload: Record<string, unknown>
-}
+type AgentEvent = AgentStableEvent
 
 const PERMISSION_MODE_OPTIONS: Array<{ value: PermissionModeValue; label: string }> = [
   { value: 'ask_every_time', label: '每次询问' },
@@ -269,6 +265,10 @@ function permissionModeLabel(mode: PermissionModeValue) {
 
 function runModeLabel(mode: RunModeValue) {
   return RUN_MODE_OPTIONS.find(option => option.value === mode)?.label ?? 'Agent'
+}
+
+function normalizeRunMode(value: unknown): RunModeValue {
+  return value === 'agent' ? 'agent' : 'chat'
 }
 
 function findLastIndex<T>(items: T[], matcher: (item: T) => boolean) {
@@ -335,11 +335,11 @@ function createProcessSegment(startedAtMs: number): ProcessSegment {
   }
 }
 
-function appendTool(tools: ToolEntry[], name: string, state: ToolState, input?: unknown) {
+function appendTool(tools: ToolEntry[], id: string, name: string, state: ToolState, input?: unknown) {
   return [
     ...tools,
     {
-      id: newId('tool'),
+      id,
       name,
       state,
       input,
@@ -349,13 +349,14 @@ function appendTool(tools: ToolEntry[], name: string, state: ToolState, input?: 
 
 function updateLatestTool(
   tools: ToolEntry[],
+  id: string,
   name: string,
   updater: (tool: ToolEntry | null) => ToolEntry,
 ) {
   const next = [...tools]
   const index = findLastIndex(
     next,
-    tool => tool.name === name && !isTerminalToolState(tool.state),
+    tool => tool.id === id || (tool.name === name && !isTerminalToolState(tool.state)),
   )
 
   if (index >= 0) {
@@ -407,6 +408,7 @@ function updateProcessSegment(
 
 function updateToolInProcessSegment(
   segments: AssistantSegment[] | undefined,
+  id: string,
   name: string,
   timestampMs: number,
   updater: (tool: ToolEntry | null) => ToolEntry,
@@ -416,21 +418,21 @@ function updateToolInProcessSegment(
     next,
     segment =>
       segment.type === 'process' &&
-      segment.tools.some(tool => tool.name === name && !isTerminalToolState(tool.state)),
+      segment.tools.some(tool => tool.id === id || (tool.name === name && !isTerminalToolState(tool.state))),
   )
 
   if (processIndex >= 0 && next[processIndex].type === 'process') {
     const process = next[processIndex]
     next[processIndex] = {
       ...process,
-      tools: updateLatestTool(process.tools, name, updater),
+      tools: updateLatestTool(process.tools, id, name, updater),
     }
     return next
   }
 
   return updateProcessSegment(next, timestampMs, process => ({
     ...process,
-    tools: updateLatestTool(process.tools, name, updater),
+    tools: updateLatestTool(process.tools, id, name, updater),
   }))
 }
 
@@ -804,7 +806,7 @@ async function waitForAgentService(timeoutMs = AGENT_START_TIMEOUT_MS) {
     : new Error('本地智能体服务启动超时。')
 }
 
-async function ensureAgentService() {
+export async function ensureAgentService() {
   try {
     await agentApi.health()
     return
@@ -1664,7 +1666,7 @@ function LlmMessageBlock({ message }: { message: LlmContextMessage }) {
   )
 }
 
-function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
+function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, workspaceRoot }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [panelState, setPanelState] = useState<PanelState>('connecting')
   const [draft, setDraft] = useState(initialInput ?? '')
@@ -1738,6 +1740,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
 
     const eventTypes = [
       'session.ready',
+      'user.message',
       'run.started',
       'assistant.thinking.token',
       'assistant.token',
@@ -1748,6 +1751,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
       'tool.call.rejected',
       'permission.requested',
       'permission.resolved',
+      'permission.interrupted',
       'todo.updated',
       'task.started',
       'task.step.started',
@@ -1760,15 +1764,17 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
       'task.completed',
       'task.failed',
       'task.killed',
+      'task.interrupted',
       'run.completed',
       'run.failed',
+      'run.cancelled',
+      'run.interrupted',
       'context.warning',
       'context.snapshot',
       'llm.output',
     ] as const
 
-    const handleAgentEvent = (event: MessageEvent<string>) => {
-      const data = JSON.parse(event.data) as AgentEvent
+    const applyAgentEvent = (data: AgentEvent) => {
       if (data.type === 'context.snapshot' || data.type === 'llm.output') {
         setLlmContextTurns(current => applyLlmContextEvent(current, {
           type: data.type,
@@ -1799,16 +1805,22 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         return
       }
 
+      if (data.type === 'user.message') {
+        const text = typeof payload.text === 'string' ? payload.text : ''
+        if (!text) return
+        setMessages(current => {
+          const id = `event-user-${data.seq}`
+          const last = current[current.length - 1]
+          return current.some(entry => entry.id === id)
+            || (last?.role === 'user' && last.content === text)
+            ? current
+            : [...current, { id, role: 'user', content: text, final: true }]
+        })
+        return
+      }
+
       if (data.type === 'run.started') {
         setPanelState('running')
-        setMessages(current =>
-          updateAssistantEntry(current, runId, entry => ({
-            ...entry,
-            streaming: true,
-            final: false,
-            segments: entry.segments ?? [],
-          })),
-        )
         return
       }
 
@@ -1857,6 +1869,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
 
       if (data.type === 'tool.call.started') {
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         if (isTodoTool(name)) return
         if (isSubagentLaunchTool(name)) {
           setMessages(current =>
@@ -1868,7 +1881,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         setMessages(current =>
           updateAssistantProcess(current, runId, data.timestampMs, process => ({
             ...process,
-            tools: appendTool(process.tools, name, 'input-available', normalizeToolValue(payload.arguments)),
+            tools: appendTool(process.tools, toolUseId, name, 'input-available', normalizeToolValue(payload.arguments)),
           })),
         )
         return
@@ -1906,10 +1919,10 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         return
       }
 
-      if (data.type === 'permission.resolved') {
+      if (data.type === 'permission.resolved' || data.type === 'permission.interrupted') {
         const approvalId = typeof payload.approvalId === 'string' ? payload.approvalId : ''
         const decision = typeof payload.decision === 'string' ? payload.decision : ''
-        const approved = decision.startsWith('allow')
+        const approved = data.type !== 'permission.interrupted' && decision.startsWith('allow')
 
         setResolvingApprovals(current => current.filter(item => item !== approvalId))
         setMessages(current =>
@@ -1923,14 +1936,15 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
 
       if (data.type === 'tool.call.completed') {
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         if (isTodoTool(name)) return
         if (isSubagentLaunchTool(name)) return
 
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
-            segments: updateToolInProcessSegment(entry.segments, name, data.timestampMs, tool => ({
-              id: tool?.id ?? newId('tool'),
+            segments: updateToolInProcessSegment(entry.segments, toolUseId, name, data.timestampMs, tool => ({
+              id: tool?.id ?? toolUseId,
               name,
               state: 'output-available',
               input: tool?.input,
@@ -1945,6 +1959,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
 
       if (data.type === 'tool.call.failed') {
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         if (isTodoTool(name)) return
         if (isSubagentLaunchTool(name)) return
 
@@ -1952,8 +1967,8 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
-            segments: updateToolInProcessSegment(entry.segments, name, data.timestampMs, tool => ({
-              id: tool?.id ?? newId('tool'),
+            segments: updateToolInProcessSegment(entry.segments, toolUseId, name, data.timestampMs, tool => ({
+              id: tool?.id ?? toolUseId,
               name,
               state: 'output-error',
               input: tool?.input,
@@ -1968,6 +1983,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
 
       if (data.type === 'tool.call.rejected') {
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         if (isTodoTool(name)) return
         if (isSubagentLaunchTool(name)) return
 
@@ -1975,8 +1991,8 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
-            segments: updateToolInProcessSegment(entry.segments, name, data.timestampMs, tool => ({
-              id: tool?.id ?? newId('tool'),
+            segments: updateToolInProcessSegment(entry.segments, toolUseId, name, data.timestampMs, tool => ({
+              id: tool?.id ?? toolUseId,
               name,
               state: 'output-denied',
               input: tool?.input,
@@ -2092,6 +2108,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
       if (data.type === 'task.tool.call.started') {
         const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         if (!taskId) return
 
         setMessages(current =>
@@ -2103,6 +2120,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
                 ...process,
                 tools: appendTool(
                   process.tools,
+                  toolUseId,
                   name,
                   'input-available',
                   normalizeToolValue(payload.arguments),
@@ -2160,6 +2178,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
       if (data.type === 'task.tool.call.completed') {
         const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         if (!taskId) return
 
         setMessages(current =>
@@ -2167,8 +2186,8 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
             ...entry,
             segments: updateSubagentInSegments(entry.segments, taskId, data.timestampMs, subagent => ({
               ...subagent,
-              segments: updateToolInProcessSegment(subagent.segments, name, data.timestampMs, tool => ({
-                id: tool?.id ?? newId('tool'),
+              segments: updateToolInProcessSegment(subagent.segments, toolUseId, name, data.timestampMs, tool => ({
+                id: tool?.id ?? toolUseId,
                 name,
                 state: 'output-available',
                 input: tool?.input,
@@ -2185,6 +2204,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
       if (data.type === 'task.tool.call.rejected') {
         const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
         const name = typeof payload.name === 'string' ? payload.name : '工具'
+        const toolUseId = typeof payload.toolUseId === 'string' ? payload.toolUseId : `event-tool-${data.seq}`
         const reason = typeof payload.reason === 'string' ? payload.reason : '工具执行被拒绝'
         if (!taskId) return
 
@@ -2193,8 +2213,8 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
             ...entry,
             segments: updateSubagentInSegments(entry.segments, taskId, data.timestampMs, subagent => ({
               ...subagent,
-              segments: updateToolInProcessSegment(subagent.segments, name, data.timestampMs, tool => ({
-                id: tool?.id ?? newId('tool'),
+              segments: updateToolInProcessSegment(subagent.segments, toolUseId, name, data.timestampMs, tool => ({
+                id: tool?.id ?? toolUseId,
                 name,
                 state: 'output-denied',
                 input: tool?.input,
@@ -2208,7 +2228,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         return
       }
 
-      if (data.type === 'task.completed' || data.type === 'task.failed' || data.type === 'task.killed') {
+      if (data.type === 'task.completed' || data.type === 'task.failed' || data.type === 'task.killed' || data.type === 'task.interrupted') {
         const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
         if (!taskId) return
 
@@ -2298,21 +2318,66 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
             ],
           })),
         )
+        return
       }
+
+      if (data.type === 'run.cancelled' || data.type === 'run.interrupted') {
+        const content = data.type === 'run.interrupted' ? '运行因进程中断而停止' : '运行已取消'
+        flushTokenBuffer()
+        setPanelState('ready')
+        setError(null)
+        setMessages(current =>
+          updateAssistantEntry(current, runId, entry => ({
+            ...entry,
+            streaming: false,
+            final: true,
+            segments: [
+              ...failOpenProcessSegments(entry.segments, data.timestampMs),
+              {
+                id: `event-terminal-${data.seq}`,
+                type: 'text',
+                content,
+                streaming: false,
+              },
+            ],
+          })),
+        )
+      }
+    }
+
+    const handleAgentEvent = (event: MessageEvent<string>) => {
+      applyAgentEvent(JSON.parse(event.data) as AgentEvent)
     }
 
     void (async () => {
       try {
         setPanelState('connecting')
+        setError(null)
+        setMessages([])
+        setLlmContextTurns([])
+        setContextWarning(null)
         await ensureAgentService()
         if (closed) return
 
-        const data = await agentApi.createSession()
+        const data = initialSessionId
+          ? await agentApi.session(initialSessionId)
+          : await agentApi.createSession()
         if (closed) return
 
+        if (initialSessionId) {
+          const history = await agentApi.history(initialSessionId)
+          if (closed) return
+          history.items
+            .slice()
+            .sort((left, right) => left.seq - right.seq)
+            .forEach(applyAgentEvent)
+        }
+
         setSessionId(data.sessionId)
+        onSessionReady?.(data.sessionId)
         setWorkingDir(data.workingDir)
         setPermissionMode(normalizePermissionMode(data.permissionMode))
+        setRunMode(normalizeRunMode(data.runMode))
         source = new EventSource(agentEventUrl(data.sessionId))
 
         source.onopen = () => {
@@ -2368,7 +2433,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
       tokenBufferRef.current.clear()
       source?.close()
     }
-  }, [])
+  }, [initialSessionId, onSessionReady])
 
   const copyMessage = useCallback(async (entry: ChatEntry) => {
     const text = buildChatEntryCopyText(entry)
@@ -2445,14 +2510,17 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
   const updateSessionConfig = useCallback(async (next: {
     workingDir?: string
     permissionMode?: PermissionModeValue
+    runMode?: RunModeValue
   }) => {
     if (!sessionId) return
 
     const nextWorkingDir = next.workingDir ?? workingDir
     const nextPermissionMode = next.permissionMode ?? permissionMode
+    const nextRunMode = next.runMode ?? runMode
 
     setWorkingDir(nextWorkingDir)
     setPermissionMode(nextPermissionMode)
+    setRunMode(nextRunMode)
 
     try {
       const data = await agentApi.updateSessionSettings(
@@ -2460,14 +2528,16 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
         {
           workingDir: nextWorkingDir,
           permissionMode: nextPermissionMode,
+          runMode: nextRunMode,
         },
       )
       setWorkingDir(data.workingDir)
       setPermissionMode(normalizePermissionMode(data.permissionMode))
+      setRunMode(normalizeRunMode(data.runMode))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '更新会话配置失败。')
     }
-  }, [permissionMode, sessionId, workingDir])
+  }, [permissionMode, runMode, sessionId, workingDir])
 
   const canSubmit = Boolean(sessionId && draft.trim()) && panelState !== 'connecting'
   const isEmptyConversation = messages.length === 0
@@ -2514,7 +2584,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
                   <RunModeControl
                     disabled={!sessionId || panelState === 'connecting' || panelState === 'running'}
                     mode={runMode}
-                    onModeChange={setRunMode}
+                    onModeChange={mode => void updateSessionConfig({ runMode: mode })}
                   />
                   <SessionControls
                     disabled={!sessionId || runMode === 'chat' || panelState === 'connecting' || panelState === 'running'}
@@ -2608,7 +2678,7 @@ function ChatPanel({ width, initialInput, workspaceRoot }: Props) {
               <RunModeControl
                 disabled={!sessionId || panelState === 'connecting' || panelState === 'running'}
                 mode={runMode}
-                onModeChange={setRunMode}
+                onModeChange={mode => void updateSessionConfig({ runMode: mode })}
               />
               <SessionControls
                 disabled={!sessionId || runMode === 'chat' || panelState === 'connecting' || panelState === 'running'}

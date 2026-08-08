@@ -2,7 +2,7 @@ package cn.ayice.veyra.runtime.chat;
 
 import cn.ayice.veyra.llm.ChatStreamer;
 
-import cn.ayice.veyra.session.persistence.TranscriptRecorder;
+import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.runtime.model.ModelCallExecutor;
 import dev.langchain4j.data.message.AiMessage;
@@ -25,7 +25,7 @@ public class ChatLoop {
     private final ChatStreamer chat;
     private final AgentEventSink eventSink;
     private final long modelCallTimeoutMs;
-    private final TranscriptRecorder transcriptRecorder;
+    private final JournalMessageRecorder messageRecorder;
     private List<ChatMessage> history = new ArrayList<>();
 
     public ChatLoop(
@@ -33,13 +33,13 @@ public class ChatLoop {
             AgentEventSink eventSink,
             long modelCallTimeoutMs,
             List<ChatMessage> initialHistory,
-            TranscriptRecorder transcriptRecorder
+            JournalMessageRecorder messageRecorder
     ) {
         this.chat = chat;
         this.eventSink = eventSink;
         this.modelCallTimeoutMs = modelCallTimeoutMs;
         this.history = new ArrayList<>(initialHistory);
-        this.transcriptRecorder = transcriptRecorder;
+        this.messageRecorder = messageRecorder;
     }
 
     /**
@@ -48,7 +48,7 @@ public class ChatLoop {
     public String process(String input) {
         eventSink.emit("user.message", eventPayload("text", input));
         UserMessage userMessage = UserMessage.from(input);
-        transcriptRecorder.record(userMessage);
+        messageRecorder.record(userMessage);
         List<ChatMessage> messages = appendMessage(history, userMessage);
 
         AiMessage aiMessage;
@@ -75,7 +75,7 @@ public class ChatLoop {
             return error;
         }
 
-        transcriptRecorder.record(aiMessage);
+        messageRecorder.record(aiMessage);
         history = appendMessage(messages, aiMessage);
         String text = aiMessage.text() == null ? "" : aiMessage.text();
         String thinking = aiMessage.thinking() == null ? "" : aiMessage.thinking();

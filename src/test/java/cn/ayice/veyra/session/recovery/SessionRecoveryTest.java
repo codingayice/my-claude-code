@@ -105,7 +105,8 @@ class SessionRecoveryTest {
         SessionJournalStore store = store();
         store.append("s1", null, SessionJournalTypes.SESSION_CREATED, Map.of(
                 "workingDir", tempDir.resolve("project").toString(),
-                "permissionMode", "auto_approve"
+                "permissionMode", "auto_approve",
+                "runMode", "agent"
         ), true);
         createRunOnly(store, "s1", "r1");
         ToolExecutionRequest request = ToolExecutionRequest.builder()
@@ -127,7 +128,56 @@ class SessionRecoveryTest {
         assertEquals(1, ((AiMessage) result.agentHistory().get(1)).toolExecutionRequests().size());
         assertEquals(4, result.sessionSummary().orElseThrow().summaryVersion());
         assertEquals("auto_approve", result.settings().permissionMode());
+        assertEquals("agent", result.settings().runMode());
         assertEquals("completed", result.lastRunStatus());
+    }
+
+    @Test
+    void projectsStableUiEventsWithoutPollutingModelContext() {
+        SessionJournalStore store = store();
+        createSessionAndRun(store, "s1", "r1");
+        store.append("s1", "r1", SessionJournalTypes.PERMISSION_REQUESTED, Map.of(
+                "approvalId", "approval-1", "toolUseId", "call-1", "tool", "Bash"
+        ), true);
+        store.append("s1", "r1", SessionJournalTypes.PERMISSION_RESOLVED, Map.of(
+                "approvalId", "approval-1", "decision", "allow_once"
+        ), true);
+        store.append("s1", "r1", SessionJournalTypes.TODO_UPDATED, Map.of(
+                "items", List.of(Map.of("content", "验证恢复", "status", "in_progress"))
+        ), true);
+        store.append("s1", "r1", SessionJournalTypes.TASK_STARTED, Map.of(
+                "taskId", "task-1", "description", "检查代码"
+        ), true);
+        store.append("s1", "r1", SessionJournalTypes.TASK_COMPLETED, Map.of(
+                "taskId", "task-1", "content", "完成"
+        ), true);
+        store.append("s1", "r1", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
+                JournalMessageCodec.encode(AiMessage.from("最终回答")), true);
+        store.append("s1", "r1", SessionJournalTypes.RUN_COMPLETED, Map.of("reason", "completed"), true);
+
+        SessionRecovery.RecoveryResult result = recovery(store).recover("s1");
+
+        assertEquals(2, result.agentHistory().size());
+        assertEquals(List.of(
+                        "run.started", "user.message", "permission.requested", "permission.resolved",
+                        "todo.updated", "task.started", "task.completed",
+                        "assistant.message.completed", "run.completed"
+                ), result.stableEvents().stream().map(event -> event.type()).toList());
+    }
+
+    @Test
+    void marksPendingApprovalInterruptedDuringRecovery() {
+        SessionJournalStore store = store();
+        createSessionAndRun(store, "s1", "r1");
+        store.append("s1", "r1", SessionJournalTypes.PERMISSION_REQUESTED, Map.of(
+                "approvalId", "approval-1", "toolUseId", "call-1", "tool", "Bash"
+        ), true);
+
+        SessionRecovery.RecoveryResult result = recovery(store).recover("s1");
+
+        assertTrue(result.stableEvents().stream().anyMatch(event ->
+                SessionJournalTypes.PERMISSION_INTERRUPTED.equals(event.type())
+                        && "approval-1".equals(event.payload().get("approvalId"))));
     }
 
     private void createSessionAndRun(SessionJournalStore store, String sessionId, String runId) {

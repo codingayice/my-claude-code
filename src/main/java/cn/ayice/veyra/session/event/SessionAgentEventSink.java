@@ -37,6 +37,8 @@ public class SessionAgentEventSink implements AgentEventSink {
             };
             if (journalType != null) {
                 journalRecorder.finishRun(journalType, payload);
+            } else {
+                journalRecorder.recordStableEvent(type, payload);
             }
         }
         events.emit(type, payload);

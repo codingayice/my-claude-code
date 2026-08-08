@@ -2,11 +2,12 @@ package cn.ayice.veyra.runtime.session;
 
 import cn.ayice.veyra.boot.SessionRuntimeFactory;
 import cn.ayice.veyra.config.AppConfig;
+import cn.ayice.veyra.session.persistence.JournalMessageCodec;
+import cn.ayice.veyra.session.persistence.SessionJournalStore;
+import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 import cn.ayice.veyra.session.persistence.SessionPathResolver;
 import cn.ayice.veyra.session.persistence.SessionRecord;
-import cn.ayice.veyra.session.persistence.TranscriptEntry;
-import cn.ayice.veyra.session.persistence.TranscriptRestorer;
-import cn.ayice.veyra.session.persistence.TranscriptStore;
+import cn.ayice.veyra.session.recovery.SessionRecovery;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.UserMessage;
 import org.junit.jupiter.api.Test;
@@ -25,11 +26,12 @@ class RuntimeSessionRegistryTest {
     Path tempDir;
 
     @Test
-    void createsSessionsAndListsPersistedTranscriptRecords() throws Exception {
+    void createsSessionsAndListsPersistedJournalRecords() throws Exception {
         TestRuntime runtime = runtime(config());
         try (RuntimeSessionRegistry sessions = runtime.sessions()) {
             SessionRuntime session = sessions.createSession();
-            runtime.store().append(session.sessionId(), TranscriptEntry.user(session.sessionId(), "第一条消息"));
+            runtime.store().append(session.sessionId(), "run-1", SessionJournalTypes.USER_MESSAGE_RECORDED,
+                    JournalMessageCodec.encode(UserMessage.from("第一条消息")), true);
 
             List<SessionRecord> records = sessions.listSessions();
 
@@ -40,15 +42,17 @@ class RuntimeSessionRegistryTest {
     }
 
     @Test
-    void restoresAgentAndChatHistoryFromTranscript() throws Exception {
+    void restoresAgentAndChatHistoryFromJournal() throws Exception {
         AppConfig config = config();
         TestRuntime first = runtime(config);
         String sessionId;
         try (RuntimeSessionRegistry sessions = first.sessions()) {
             SessionRuntime created = sessions.createSession();
             sessionId = created.sessionId();
-            first.store().append(sessionId, TranscriptEntry.fromChatMessage(sessionId, UserMessage.from("旧问题")));
-            first.store().append(sessionId, TranscriptEntry.fromChatMessage(sessionId, AiMessage.from("旧回答")));
+            first.store().append(sessionId, "run-1", SessionJournalTypes.USER_MESSAGE_RECORDED,
+                    JournalMessageCodec.encode(UserMessage.from("旧问题")), true);
+            first.store().append(sessionId, "run-1", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
+                    JournalMessageCodec.encode(AiMessage.from("旧回答")), true);
         }
 
         TestRuntime restarted = runtime(config);
@@ -62,30 +66,15 @@ class RuntimeSessionRegistryTest {
         }
     }
 
-    @Test
-    void readsPersistedTranscriptEntriesForSessionDetail() throws Exception {
-        TestRuntime runtime = runtime(config());
-        try (RuntimeSessionRegistry sessions = runtime.sessions()) {
-            SessionRuntime session = sessions.createSession();
-            runtime.store().append(session.sessionId(), TranscriptEntry.user(session.sessionId(), "继续之前的问题"));
-            runtime.store().append(session.sessionId(), TranscriptEntry.assistant(session.sessionId(), "可以，先恢复上下文。"));
-
-            List<TranscriptEntry> entries = sessions.transcriptEntries(session.sessionId());
-
-            assertEquals(2, entries.size());
-            assertEquals("user", entries.get(0).role());
-            assertEquals("继续之前的问题", entries.get(0).content());
-            assertEquals("assistant", entries.get(1).role());
-        }
-    }
-
     private TestRuntime runtime(AppConfig config) {
-        TranscriptStore store = new TranscriptStore(
+        SessionJournalStore store = new SessionJournalStore(
                 new SessionPathResolver(config.getMemoryDir(), config.getWorkspace())
         );
         SessionRuntimeFactory factory = new SessionRuntimeFactory(
                 config, store, Runnable::run, Runnable::run, Runnable::run);
-        return new TestRuntime(store, new RuntimeSessionRegistry(store, new TranscriptRestorer(), factory));
+        SessionRecovery recovery = new SessionRecovery(
+                store, Path.of(config.getWorkspace()), config.getPermissionMode());
+        return new TestRuntime(store, new RuntimeSessionRegistry(store, recovery, factory));
     }
 
     private AppConfig config() throws Exception {
@@ -95,8 +84,8 @@ class RuntimeSessionRegistryTest {
                   name: Test
                 model:
                   apiKey: test
-                memory:
-                  dir: "%s"
+                storage:
+                  root: "%s"
                 security:
                   workspace: "%s"
                 permission:
@@ -110,6 +99,6 @@ class RuntimeSessionRegistryTest {
         return new AppConfig(config.toString());
     }
 
-    private record TestRuntime(TranscriptStore store, RuntimeSessionRegistry sessions) {
+    private record TestRuntime(SessionJournalStore store, RuntimeSessionRegistry sessions) {
     }
 }

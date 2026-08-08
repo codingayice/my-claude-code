@@ -103,8 +103,8 @@ class AgentServerApplicationTest {
                   timeoutSeconds: 1
                 context:
                   maxContextTokens: 128000
-                memory:
-                  dir: %s
+                storage:
+                  root: %s
                 security:
                   workspace: %s
                 permission:

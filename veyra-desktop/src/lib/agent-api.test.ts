@@ -36,13 +36,44 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
       sessionId: "session/1",
       workingDir: "D:\\workspace",
       permissionMode: "ask_every_time",
+      runMode: "chat",
     }),
+    apiResponse({ items: [{
+      sessionId: "session/1",
+      title: "First session",
+      createdAt: "2026-08-08T00:00:00Z",
+      updatedAt: "2026-08-08T01:00:00Z",
+      journalPath: "D:\\sessions\\session-1.journal.jsonl",
+    }] }),
+    apiResponse({
+      sessionId: "session/1",
+      workingDir: "D:\\workspace",
+      permissionMode: "ask_every_time",
+      runMode: "agent",
+      lastRunStatus: "completed",
+    }),
+    apiResponse({ items: [{
+      id: "1",
+      sessionId: "session/1",
+      role: "user",
+      content: "hello",
+      timestamp: "2026-08-08T00:00:00Z",
+    }] }),
+    apiResponse({ items: [{
+      seq: 1,
+      sessionId: "session/1",
+      runId: "run-1",
+      type: "user.message",
+      timestampMs: 1786147200000,
+      payload: { text: "hello" },
+    }] }),
     apiResponse({ runId: "run-1", accepted: true }, 202),
     apiResponse({ ok: true }),
     apiResponse({
       sessionId: "session/1",
       workingDir: "D:\\next",
       permissionMode: "project_auto",
+      runMode: "agent",
     }),
   ]
   const fetcher: AgentFetch = async (input, init) => {
@@ -55,6 +86,10 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
 
   assert.deepEqual(await client.health(), { ok: true })
   assert.equal((await client.createSession()).sessionId, "session/1")
+  assert.equal((await client.listSessions()).items[0].title, "First session")
+  assert.equal((await client.session("session/1")).lastRunStatus, "completed")
+  assert.equal((await client.transcript("session/1")).items[0].content, "hello")
+  assert.equal((await client.history("session/1")).items[0].type, "user.message")
   assert.deepEqual(await client.createRun("session/1", "hello", "agent"), {
     runId: "run-1",
     accepted: true,
@@ -65,6 +100,7 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
       await client.updateSessionSettings("session/1", {
         workingDir: "D:\\next",
         permissionMode: "project_auto",
+        runMode: "agent",
       })
     ).workingDir,
     "D:\\next"
@@ -73,28 +109,33 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
   assert.equal(requests[0].url, `${AGENT_API_BASE}/health`)
   assert.equal(requests[1].url, `${AGENT_API_BASE}/sessions`)
   assert.equal(requests[1].init?.method, "POST")
-  assert.equal(requests[2].url, `${AGENT_API_BASE}/sessions/session%2F1/runs`)
+  assert.equal(requests[2].url, `${AGENT_API_BASE}/sessions`)
+  assert.equal(requests[3].url, `${AGENT_API_BASE}/sessions/session%2F1`)
+  assert.equal(requests[4].url, `${AGENT_API_BASE}/sessions/session%2F1/transcript`)
+  assert.equal(requests[5].url, `${AGENT_API_BASE}/sessions/session%2F1/history`)
+  assert.equal(requests[6].url, `${AGENT_API_BASE}/sessions/session%2F1/runs`)
   assert.equal(
-    requests[2].init?.body,
+    requests[6].init?.body,
     JSON.stringify({ input: "hello", mode: "agent" })
   )
   assert.equal(
-    requests[3].url,
+    requests[7].url,
     `${AGENT_API_BASE}/sessions/session%2F1/approvals/approval%2F1/decision`
   )
   assert.equal(
-    requests[3].init?.body,
+    requests[7].init?.body,
     JSON.stringify({ decision: "allow_once" })
   )
   assert.equal(
-    requests[4].url,
+    requests[8].url,
     `${AGENT_API_BASE}/sessions/session%2F1/settings`
   )
   assert.equal(
-    requests[4].init?.body,
+    requests[8].init?.body,
     JSON.stringify({
       workingDir: "D:\\next",
       permissionMode: "project_auto",
+      runMode: "agent",
     })
   )
   assert.equal(

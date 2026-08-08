@@ -4,7 +4,7 @@
 
 **Goal:** Add Claude Code style local session persistence so agent sessions survive backend restarts and can be resumed from JSONL transcripts.
 
-**Architecture:** Move session ownership out of the HTTP transport layer into `cn.ayice.veyra.session`. Store each session as append-only JSONL under `~/.mycc/projects/<workspace>/<sessionId>.jsonl`, and restore runtime history by reading transcript entries back into LangChain4j `ChatMessage` objects.
+**Architecture:** Move session ownership out of the HTTP transport layer into `cn.ayice.veyra.session`. Store each session as append-only JSONL under `~/.veyra/sessions/projects/<workspace>/<sessionId>.jsonl`, and restore runtime history by reading transcript entries back into LangChain4j `ChatMessage` objects.
 
 **Tech Stack:** Java 17, JUnit 5, Jackson, LangChain4j message types, existing JDK HTTP server and SSE transport.
 

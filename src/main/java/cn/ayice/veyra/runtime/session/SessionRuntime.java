@@ -2,6 +2,7 @@ package cn.ayice.veyra.runtime.session;
 
 import cn.ayice.veyra.session.PendingApprovalState;
 import cn.ayice.veyra.session.SessionState;
+import cn.ayice.veyra.session.SessionSettings;
 import cn.ayice.veyra.session.event.SessionEventStream;
 import cn.ayice.veyra.interaction.command.SlashCommandDispatcher;
 import cn.ayice.veyra.interaction.command.SlashCommandOption;
@@ -37,6 +38,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     private final SlashCommandDispatcher slashCommands;
     private final SessionRunQueue runQueue;
     private final SessionJournalRecorder journalRecorder;
+    private volatile String runMode;
     private volatile String lastRunStatus;
 
     /**
@@ -53,7 +55,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             Executor executor
     ) {
         this(sessionId, events, confirmation, agentLoop, chatLoop, permissionContextStore,
-                slashCommands, executor, null, "idle");
+                slashCommands, executor, null, "chat", "idle");
     }
 
     /**
@@ -69,6 +71,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             SlashCommandDispatcher slashCommands,
             Executor executor,
             SessionJournalRecorder journalRecorder,
+            String runMode,
             String lastRunStatus
     ) {
         this.sessionId = sessionId;
@@ -80,6 +83,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         this.slashCommands = slashCommands;
         this.runQueue = new SessionRunQueue(executor);
         this.journalRecorder = journalRecorder;
+        this.runMode = runMode == null || runMode.isBlank() ? "chat" : runMode;
         this.lastRunStatus = lastRunStatus == null ? "idle" : lastRunStatus;
     }
 
@@ -117,6 +121,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
                 sessionId,
                 workingDir == null ? "" : workingDir.toString(),
                 mode.configValue(),
+                runMode,
                 lastRunStatus
         );
     }
@@ -124,26 +129,38 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     /**
      * 原子更新当前会话的工作目录和权限模式并返回新快照。
      */
-    public SessionState updateSettings(String workingDir, String permissionMode) {
-        PermissionMode mode = PermissionMode.fromString(permissionMode);
+    public synchronized SessionState updateSettings(String workingDir, String permissionMode, String requestedRunMode) {
         Path nextWorkingDir = workingDir == null || workingDir.isBlank()
                 ? null
                 : Path.of(workingDir);
         PermissionContext current = permissionContextStore.current();
         PermissionContext next = current == null ? PermissionContext.builder().build() : current;
+        PermissionMode mode = permissionMode == null || permissionMode.isBlank()
+                ? next.mode()
+                : PermissionMode.fromString(permissionMode);
         if (nextWorkingDir != null) {
             next = next.withWorkingDirectory(nextWorkingDir);
         }
         next = next.withMode(mode);
+        Path persistedWorkingDir = next.workingDir();
+        if (persistedWorkingDir == null) {
+            throw new IllegalArgumentException("workingDir must be configured before persisting settings");
+        }
+        SessionSettings normalized = new SessionSettings(
+                persistedWorkingDir,
+                mode.configValue(),
+                requestedRunMode == null || requestedRunMode.isBlank() ? runMode : requestedRunMode
+        );
         if (journalRecorder != null) {
-            Path persistedWorkingDir = next.workingDir();
-            if (persistedWorkingDir == null) {
-                throw new IllegalArgumentException("workingDir must be configured before persisting settings");
-            }
-            journalRecorder.recordSettings(persistedWorkingDir, mode.configValue());
+            journalRecorder.recordSettings(
+                    normalized.workingDir(),
+                    normalized.permissionMode(),
+                    normalized.runMode()
+            );
         }
         PermissionContext committed = next;
         permissionContextStore.update(ignored -> committed);
+        runMode = normalized.runMode();
         return state();
     }
 
@@ -155,7 +172,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             return;
         }
         PermissionContext context = permissionContextStore.current();
-        journalRecorder.recordSessionCreated(context.workingDir(), context.mode().configValue());
+        journalRecorder.recordSessionCreated(context.workingDir(), context.mode().configValue(), runMode);
     }
 
     /**
