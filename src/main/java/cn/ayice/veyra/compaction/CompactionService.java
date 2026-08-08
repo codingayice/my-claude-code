@@ -31,7 +31,7 @@ public final class CompactionService {
     private final ContextService contextBuilder;
     private final CompactionConfig compactConfig;
     private final MicroCompactor microCompactor;
-    private final CheckpointState checkpointState;
+    private final SessionSummaryState summaryState;
     private final SummaryCompactor summaryCompactor;
     private final CompactionService.ModifiedFiles modifiedFileSource;
 
@@ -42,14 +42,14 @@ public final class CompactionService {
             ContextService contextBuilder,
             CompactionConfig compactConfig,
             MicroCompactor microCompactor,
-            CheckpointState checkpointState,
+            SessionSummaryState summaryState,
             SummaryCompactor summaryCompactor,
             CompactionService.ModifiedFiles modifiedFileSource
     ) {
         this.contextBuilder = Objects.requireNonNull(contextBuilder, "contextBuilder");
         this.compactConfig = Objects.requireNonNull(compactConfig, "compactConfig");
         this.microCompactor = Objects.requireNonNull(microCompactor, "microCompactor");
-        this.checkpointState = checkpointState;
+        this.summaryState = summaryState;
         this.summaryCompactor = Objects.requireNonNull(summaryCompactor, "summaryCompactor");
         this.modifiedFileSource = Objects.requireNonNull(modifiedFileSource, "modifiedFileSource");
     }
@@ -66,7 +66,7 @@ public final class CompactionService {
         List<WorkingMessage> original = List.copyOf(currentMessages);
         List<WorkingMessage> messages = original;
         CompactionService.Strategy strategy = CompactionService.Strategy.NONE;
-        Optional<CheckpointState.Candidate> candidate = Optional.empty();
+        Optional<SessionSummaryState.SummaryCandidate> summaryCandidate = Optional.empty();
         boolean strictLlmSummaryUsed = trigger == CompactionService.Trigger.REACTIVE;
 
         ChatRequest request = buildWorkingRequest(messages, workingDir);
@@ -85,8 +85,8 @@ public final class CompactionService {
                 capacityState = classify(inputTokens, compactConfig);
             }
             if (capacityState == CapacityState.COMPACT_REQUIRED
-                    && checkpointState != null && checkpointState.current().isPresent()) {
-                messages = applySessionCheckpoint(messages, checkpointState.current().orElseThrow(), inputTokens);
+                    && summaryState != null && summaryState.current().isPresent()) {
+                messages = applySessionSummary(messages, summaryState.current().orElseThrow(), inputTokens);
                 strategy = CompactionService.Strategy.SESSION_SUMMARY;
                 request = buildWorkingRequest(messages, workingDir);
                 inputTokens = measureRequest(request);
@@ -120,7 +120,7 @@ public final class CompactionService {
             if (llm.strategy() == CompactionService.Strategy.LLM_SUMMARY) {
                 messages = llm.messages();
                 strategy = llm.strategy();
-                candidate = llm.checkpointCandidate();
+                summaryCandidate = llm.summaryCandidate();
                 request = buildWorkingRequest(messages, workingDir);
                 inputTokens = measureRequest(request);
                 capacityState = classify(inputTokens, compactConfig);
@@ -160,7 +160,7 @@ public final class CompactionService {
             if (stricter.strategy() == CompactionService.Strategy.LLM_SUMMARY) {
                 strictLlmSummaryUsed = true;
                 messages = stricter.messages();
-                candidate = stricter.checkpointCandidate();
+                summaryCandidate = stricter.summaryCandidate();
                 request = buildWorkingRequest(messages, workingDir);
                 inputTokens = measureRequest(request);
                 capacityState = classify(inputTokens, compactConfig);
@@ -178,10 +178,10 @@ public final class CompactionService {
         if (!validation.valid()) {
             throw new PreparationException(validation.errorCode());
         }
-        CheckpointState.CommitResult commitResult = null;
-        if (candidate.isPresent() && checkpointState != null) {
-            commitResult = checkpointState.commit(candidate.orElseThrow());
-            if (commitResult.status() == CheckpointState.CommitStatus.SKIPPED_CLOSED) {
+        SessionSummaryState.CommitResult commitResult = null;
+        if (summaryCandidate.isPresent() && summaryState != null) {
+            commitResult = summaryState.commit(summaryCandidate.orElseThrow());
+            if (commitResult.status() == SessionSummaryState.CommitStatus.SKIPPED_CLOSED) {
                 throw new PreparationException("SESSION_CLOSED");
             }
         }
@@ -193,9 +193,9 @@ public final class CompactionService {
                 capacityState,
                 strategy,
                 commitResult == null ? null : commitResult.status(),
-                commitResult == null || commitResult.status() != CheckpointState.CommitStatus.COMMITTED
+                commitResult == null || commitResult.status() != SessionSummaryState.CommitStatus.COMMITTED
                         ? null
-                        : commitResult.checkpoint().orElseThrow().checkpointVersion()
+                        : commitResult.summary().orElseThrow().summaryVersion()
         );
     }
 
@@ -232,14 +232,14 @@ public final class CompactionService {
     /**
      * 用已提交 Session Summary 替换 coveredSequence 以内的历史，并保留其后原始消息。
      */
-    private List<WorkingMessage> applySessionCheckpoint(
+    private List<WorkingMessage> applySessionSummary(
             List<WorkingMessage> messages,
-            CheckpointState.Checkpoint checkpoint,
+            SessionSummaryState.SummarySnapshot summary,
             int preCompactTokens
     ) {
         List<WorkingMessage> recent = messages.stream()
                 .filter(message -> message.sequence().isPresent())
-                .filter(message -> message.sequence().getAsLong() > checkpoint.coveredSequence())
+                .filter(message -> message.sequence().getAsLong() > summary.coveredSequence())
                 .toList();
         List<WorkingMessage> result = new ArrayList<>(recent.size() + 2);
         result.add(WorkingMessage.synthetic(CompactBoundary.create(
@@ -248,13 +248,13 @@ public final class CompactionService {
                 messages.size() - recent.size()
         )));
         result.add(WorkingMessage.synthetic(UserMessage.from("""
-                <session-summary checkpoint="%d" covered-sequence="%d">
+                <session-summary version="%d" covered-sequence="%d">
                 %s
                 </session-summary>
                 """.formatted(
-                checkpoint.checkpointVersion(),
-                checkpoint.coveredSequence(),
-                checkpoint.summaryText()
+                summary.summaryVersion(),
+                summary.coveredSequence(),
+                summary.summaryText()
         ))));
         result.addAll(recent);
         return List.copyOf(result);
@@ -311,7 +311,7 @@ public final class CompactionService {
     }
 
     /**
-     * 一次成功准备的不可分结果，包含最终历史、请求、预算、策略和 checkpoint 提交信息。
+     * 一次成功准备的不可分结果，包含最终历史、请求、预算、策略和摘要提交信息。
      */
     public record PreparedWorkingTurn(
             List<WorkingMessage> messages,
@@ -320,8 +320,8 @@ public final class CompactionService {
             int inputTokens,
             CapacityState capacityState,
             CompactionService.Strategy strategy,
-            CheckpointState.CommitStatus checkpointCommit,
-            Long checkpointVersion
+            SessionSummaryState.CommitStatus summaryCommit,
+            Long summaryVersion
     ) {
         public PreparedWorkingTurn {
             messages = List.copyOf(messages);
@@ -362,11 +362,11 @@ public final class CompactionService {
     record Result(
             List<WorkingMessage> messages,
             Strategy strategy,
-            Optional<CheckpointState.Candidate> checkpointCandidate
+            Optional<SessionSummaryState.SummaryCandidate> summaryCandidate
     ) {
         Result {
             messages = List.copyOf(messages);
-            checkpointCandidate = checkpointCandidate == null ? Optional.empty() : checkpointCandidate;
+            summaryCandidate = summaryCandidate == null ? Optional.empty() : summaryCandidate;
         }
     }
 

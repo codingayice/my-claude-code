@@ -12,6 +12,8 @@ import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionMode;
 import cn.ayice.veyra.runtime.agent.AgentLoop;
 import cn.ayice.veyra.runtime.chat.ChatLoop;
+import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
+import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -34,6 +36,8 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     private final PermissionContextStore permissionContextStore;
     private final SlashCommandDispatcher slashCommands;
     private final SessionRunQueue runQueue;
+    private final SessionJournalRecorder journalRecorder;
+    private volatile String lastRunStatus;
 
     /**
      * 使用已装配的会话级组件和共享 Run 执行器创建运行时。
@@ -48,6 +52,25 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             SlashCommandDispatcher slashCommands,
             Executor executor
     ) {
+        this(sessionId, events, confirmation, agentLoop, chatLoop, permissionContextStore,
+                slashCommands, executor, null, "idle");
+    }
+
+    /**
+     * 使用可选 Durable Journal 和恢复后的 Run 状态创建 Session Runtime。
+     */
+    public SessionRuntime(
+            String sessionId,
+            SessionEventStream events,
+            ToolApprovalQueue confirmation,
+            AgentLoop agentLoop,
+            ChatLoop chatLoop,
+            PermissionContextStore permissionContextStore,
+            SlashCommandDispatcher slashCommands,
+            Executor executor,
+            SessionJournalRecorder journalRecorder,
+            String lastRunStatus
+    ) {
         this.sessionId = sessionId;
         this.events = events;
         this.confirmation = confirmation;
@@ -56,6 +79,8 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         this.permissionContextStore = permissionContextStore;
         this.slashCommands = slashCommands;
         this.runQueue = new SessionRunQueue(executor);
+        this.journalRecorder = journalRecorder;
+        this.lastRunStatus = lastRunStatus == null ? "idle" : lastRunStatus;
     }
 
     /**
@@ -91,7 +116,8 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         return new SessionState(
                 sessionId,
                 workingDir == null ? "" : workingDir.toString(),
-                mode.configValue()
+                mode.configValue(),
+                lastRunStatus
         );
     }
 
@@ -103,17 +129,62 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         Path nextWorkingDir = workingDir == null || workingDir.isBlank()
                 ? null
                 : Path.of(workingDir);
-        // 通过 store 的原子更新入口替换不可变 PermissionContext，避免并发读取到半更新状态。
-        permissionContextStore.update(current -> {
-            PermissionContext next = current == null
-                    ? PermissionContext.builder().build()
-                    : current;
-            if (nextWorkingDir != null) {
-                next = next.withWorkingDirectory(nextWorkingDir);
+        PermissionContext current = permissionContextStore.current();
+        PermissionContext next = current == null ? PermissionContext.builder().build() : current;
+        if (nextWorkingDir != null) {
+            next = next.withWorkingDirectory(nextWorkingDir);
+        }
+        next = next.withMode(mode);
+        if (journalRecorder != null) {
+            Path persistedWorkingDir = next.workingDir();
+            if (persistedWorkingDir == null) {
+                throw new IllegalArgumentException("workingDir must be configured before persisting settings");
             }
-            return next.withMode(mode);
-        });
+            journalRecorder.recordSettings(persistedWorkingDir, mode.configValue());
+        }
+        PermissionContext committed = next;
+        permissionContextStore.update(ignored -> committed);
         return state();
+    }
+
+    /**
+     * 在注册表发布新 Session 前持久化其创建事实。
+     */
+    public void persistCreation() {
+        if (journalRecorder == null) {
+            return;
+        }
+        PermissionContext context = permissionContextStore.current();
+        journalRecorder.recordSessionCreated(context.workingDir(), context.mode().configValue());
+    }
+
+    /**
+     * 原子持久化 Run 受理事实；已有未终止 Run 时拒绝。
+     */
+    public synchronized boolean acceptRun(String runId, String input, String mode) {
+        if (journalRecorder == null) {
+            return true;
+        }
+        try {
+            journalRecorder.acceptRun(runId, input, mode);
+            lastRunStatus = "running";
+            return true;
+        } catch (IllegalStateException alreadyRunning) {
+            if ("SESSION_ALREADY_RUNNING".equals(alreadyRunning.getMessage())) {
+                return false;
+            }
+            throw alreadyRunning;
+        }
+    }
+
+    /**
+     * Run 入队失败时写入稳定失败终态。
+     */
+    public synchronized void failEnqueue() {
+        if (journalRecorder != null) {
+            journalRecorder.finishRun(SessionJournalTypes.RUN_FAILED, Map.of("reason", "enqueue_failed"));
+        }
+        lastRunStatus = "failed";
     }
 
     /**
@@ -171,6 +242,9 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     @Override
     public void bindRun(String runId) {
         events.bindRun(runId);
+        if (journalRecorder != null) {
+            journalRecorder.bindRun(runId);
+        }
     }
 
     /**
@@ -195,6 +269,24 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     @Override
     public void executeChat(String input) {
         chatLoop.process(input);
+    }
+
+    /** 持久化当前 Run 的正常终态。 */
+    @Override
+    public void completeRun(Map<String, Object> payload) {
+        if (journalRecorder != null) {
+            journalRecorder.finishRun(SessionJournalTypes.RUN_COMPLETED, payload);
+        }
+        lastRunStatus = "completed";
+    }
+
+    /** 持久化当前 Run 的失败终态。 */
+    @Override
+    public void failRun(Map<String, Object> payload) {
+        if (journalRecorder != null) {
+            journalRecorder.finishRun(SessionJournalTypes.RUN_FAILED, payload);
+        }
+        lastRunStatus = "failed";
     }
 
     /**

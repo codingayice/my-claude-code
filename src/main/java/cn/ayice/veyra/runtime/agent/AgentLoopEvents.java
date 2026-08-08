@@ -141,7 +141,7 @@ class AgentLoopEvents {
     }
 
     /**
-     * 发布一次前台压缩成功后的策略、预算变化和 checkpoint 版本。
+     * 发布一次前台压缩成功后的策略、预算变化和摘要版本。
      */
     void compactionCompleted(CompactionService.Trigger trigger, PreparedWorkingTurn prepared, long durationMs) {
         emit("compaction.completed",
@@ -150,8 +150,8 @@ class AgentLoopEvents {
                 "preInputTokens", prepared.preCompactInputTokens(),
                 "postInputTokens", prepared.inputTokens(),
                 "tokensSaved", Math.max(0, prepared.preCompactInputTokens() - prepared.inputTokens()),
-                "checkpointCommit", prepared.checkpointCommit(),
-                "checkpointVersion", prepared.checkpointVersion(),
+                "summaryCommit", prepared.summaryCommit(),
+                "summaryVersion", prepared.summaryVersion(),
                 "durationMs", durationMs
         );
     }

@@ -24,8 +24,8 @@ public final class LoopState {
     public static final String TERMINAL_CANCELLED = "TERMINAL_CANCELLED";
 
     private List<WorkingMessage> messages;
-    private long nextSequence;
-    private long currentStableSequence;
+    private long nextSequence; // 下一条原始消息的 sequence，供 process 内唯一分配使用
+    private long currentStableSequence; // 最近一次完整工具批次或最终回复后的稳定原始序号
     private String state;
     private String transitionReason;
     private int turnCount;

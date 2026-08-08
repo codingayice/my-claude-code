@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 /**
- * 压缩模块唯一的 LLM 摘要器，同时支持即时历史压缩和后台 checkpoint 增量摘要。
+ * 压缩模块唯一的 LLM 摘要器，同时支持即时历史压缩和后台会话摘要增量更新。
  */
 public final class SummaryCompactor {
 
@@ -51,9 +51,9 @@ public final class SummaryCompactor {
     private final AIService ai;
     private final int maxChunkInputTokens;
     private final int keepRecentMessages;
-    private final int checkpointMaxInputTokens;
-    private final int checkpointMaxSummaryTokens;
-    private final int checkpointRetrySummaryTokens;
+    private final int sessionSummaryMaxInputTokens;
+    private final int sessionSummaryMaxTokens;
+    private final int sessionSummaryRetryTokens;
 
     /**
      * 使用当前默认即时压缩和后台摘要预算创建摘要器。
@@ -83,21 +83,21 @@ public final class SummaryCompactor {
             AIService ai,
             int maxChunkInputTokens,
             int keepRecentMessages,
-            int checkpointMaxInputTokens,
-            int checkpointMaxSummaryTokens,
-            int checkpointRetrySummaryTokens
+            int sessionSummaryMaxInputTokens,
+            int sessionSummaryMaxTokens,
+            int sessionSummaryRetryTokens
     ) {
         this.ai = Objects.requireNonNull(ai, "ai");
-        if (maxChunkInputTokens <= 0 || keepRecentMessages <= 0 || checkpointMaxInputTokens <= 0
-                || checkpointMaxSummaryTokens <= 0 || checkpointRetrySummaryTokens <= 0
-                || checkpointRetrySummaryTokens >= checkpointMaxSummaryTokens) {
+        if (maxChunkInputTokens <= 0 || keepRecentMessages <= 0 || sessionSummaryMaxInputTokens <= 0
+                || sessionSummaryMaxTokens <= 0 || sessionSummaryRetryTokens <= 0
+                || sessionSummaryRetryTokens >= sessionSummaryMaxTokens) {
             throw new IllegalArgumentException("invalid summary compaction limits");
         }
         this.maxChunkInputTokens = maxChunkInputTokens;
         this.keepRecentMessages = keepRecentMessages;
-        this.checkpointMaxInputTokens = checkpointMaxInputTokens;
-        this.checkpointMaxSummaryTokens = checkpointMaxSummaryTokens;
-        this.checkpointRetrySummaryTokens = checkpointRetrySummaryTokens;
+        this.sessionSummaryMaxInputTokens = sessionSummaryMaxInputTokens;
+        this.sessionSummaryMaxTokens = sessionSummaryMaxTokens;
+        this.sessionSummaryRetryTokens = sessionSummaryRetryTokens;
     }
 
     /**
@@ -179,58 +179,58 @@ public final class SummaryCompactor {
         return new CompactionService.Result(
                 compacted,
                 CompactionService.Strategy.LLM_SUMMARY,
-                Optional.of(new CheckpointState.Candidate(summary, coveredSequence))
+                Optional.of(new SessionSummaryState.SummaryCandidate(summary, coveredSequence))
         );
     }
 
     /**
-     * 只总结已提交 checkpoint 之后的稳定增量，并生成新的候选。
+     * 只总结已提交会话摘要之后的稳定增量，并生成新的候选。
      */
-    public CheckpointState.Candidate generateCheckpoint(
+    public SessionSummaryState.SummaryCandidate generateSessionSummary(
             BackgroundSummaryScheduler.Snapshot snapshot,
-            Optional<CheckpointState.Checkpoint> previousCheckpoint
+            Optional<SessionSummaryState.SummarySnapshot> previousSummary
     ) {
         Objects.requireNonNull(snapshot, "snapshot");
-        Optional<CheckpointState.Checkpoint> previous = previousCheckpoint == null
+        Optional<SessionSummaryState.SummarySnapshot> previous = previousSummary == null
                 ? Optional.empty()
-                : previousCheckpoint;
-        long previousCoveredSequence = previous.map(CheckpointState.Checkpoint::coveredSequence).orElse(0L);
+                : previousSummary;
+        long previousCoveredSequence = previous.map(SessionSummaryState.SummarySnapshot::coveredSequence).orElse(0L);
         List<WorkingMessage> incremental = snapshot.messages().stream()
                 .filter(message -> message.sequence().isPresent())
                 .filter(message -> message.sequence().getAsLong() > previousCoveredSequence)
                 .filter(message -> message.sequence().getAsLong() <= snapshot.endSequence())
                 .toList();
         if (incremental.isEmpty()) {
-            throw new IllegalArgumentException("snapshot has no messages after the current checkpoint");
+            throw new IllegalArgumentException("snapshot has no messages after the current session summary");
         }
 
-        String previousSummary = previous.map(CheckpointState.Checkpoint::summaryText).orElse("");
-        List<List<WorkingMessage>> chunks = split(incremental, checkpointMaxInputTokens);
+        String previousSummaryText = previous.map(SessionSummaryState.SummarySnapshot::summaryText).orElse("");
+        List<List<WorkingMessage>> chunks = split(incremental, sessionSummaryMaxInputTokens);
         String summary;
         if (chunks.size() == 1) {
-            summary = callCheckpointModel(
-                    buildSessionSummaryPrompt(previousSummary, formatMessages(chunks.get(0))),
-                    checkpointMaxSummaryTokens
+            summary = callSessionSummaryModel(
+                    buildSessionSummaryPrompt(previousSummaryText, formatMessages(chunks.get(0))),
+                    sessionSummaryMaxTokens
             );
         } else {
             List<String> partialSummaries = chunks.stream()
-                    .map(chunk -> callCheckpointModel(
+                    .map(chunk -> callSessionSummaryModel(
                             buildChunkSummaryPrompt(formatMessages(chunk)),
-                            checkpointMaxSummaryTokens
+                            sessionSummaryMaxTokens
                     ))
                     .toList();
-            summary = callCheckpointModel(
-                    buildMergePrompt(previousSummary, partialSummaries),
-                    checkpointMaxSummaryTokens
+            summary = callSessionSummaryModel(
+                    buildMergePrompt(previousSummaryText, partialSummaries),
+                    sessionSummaryMaxTokens
             );
         }
-        if (TokenEstimator.estimateText(summary) > checkpointMaxSummaryTokens) {
-            summary = callCheckpointModel(buildShorterSummaryPrompt(summary), checkpointRetrySummaryTokens);
+        if (TokenEstimator.estimateText(summary) > sessionSummaryMaxTokens) {
+            summary = callSessionSummaryModel(buildShorterSummaryPrompt(summary), sessionSummaryRetryTokens);
         }
-        if (TokenEstimator.estimateText(summary) > checkpointMaxSummaryTokens) {
+        if (TokenEstimator.estimateText(summary) > sessionSummaryMaxTokens) {
             throw new IllegalStateException("SESSION_SUMMARY_OUTPUT_TOO_LARGE");
         }
-        return new CheckpointState.Candidate(summary, snapshot.endSequence());
+        return new SessionSummaryState.SummaryCandidate(summary, snapshot.endSequence());
     }
 
     /**
@@ -277,7 +277,7 @@ public final class SummaryCompactor {
     /**
      * 使用会话摘要系统提示词调用模型。
      */
-    private String callCheckpointModel(String prompt, int maxOutputTokens) {
+    private String callSessionSummaryModel(String prompt, int maxOutputTokens) {
         return callModel(
                 prompt,
                 maxOutputTokens,
@@ -352,7 +352,7 @@ public final class SummaryCompactor {
     }
 
     /**
-     * 构造基于旧 checkpoint 和新增稳定历史的摘要提示词。
+     * 构造基于旧会话摘要和新增稳定历史的摘要提示词。
      */
     private static String buildSessionSummaryPrompt(String previousSummary, String conversation) {
         String previous = previousSummary == null || previousSummary.isBlank() ? "(无)" : previousSummary;

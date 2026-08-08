@@ -12,7 +12,7 @@ import cn.ayice.veyra.session.persistence.TranscriptRecorder;
 import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.state.TodoManager;
-import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
@@ -151,7 +151,7 @@ class AgentLoopRecoveryTest {
                 10,
                 null,
                 sink,
-                new CheckpointState(),
+                new SessionSummaryState(),
                 null,
                 new FileStateCache(),
                 modelCallTimeoutMs,

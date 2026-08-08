@@ -8,6 +8,7 @@ import cn.ayice.veyra.session.SessionService;
 import cn.ayice.veyra.session.SessionState;
 import cn.ayice.veyra.session.SessionSummary;
 import cn.ayice.veyra.session.TranscriptItem;
+import cn.ayice.veyra.session.event.AgentEvent;
 import cn.ayice.veyra.runtime.RunCommand;
 import cn.ayice.veyra.runtime.RunCoordinator;
 import cn.ayice.veyra.runtime.RunMode;
@@ -75,6 +76,8 @@ public class RuntimeHost {
      * 返回指定会话的持久化转录条目。
      */
     public List<TranscriptItem> transcriptEntries(String sessionId) {
+        // 历史读取先触发惰性恢复，避免把悬挂 Run/Tool 原始状态直接暴露给控制面。
+        runtimeSessions.getOrCreate(sessionId);
         return persistedSessions.transcript(sessionId).stream()
                 .map(entry -> new TranscriptItem(
                         entry.id(),
@@ -86,6 +89,14 @@ public class RuntimeHost {
                         entry.timestamp()
                 ))
                 .toList();
+    }
+
+    /**
+     * 完成惰性恢复后返回 Journal 投影的稳定 UI 事件。
+     */
+    public List<AgentEvent> stableHistory(String sessionId) {
+        runtimeSessions.getOrCreate(sessionId);
+        return persistedSessions.stableHistory(sessionId);
     }
 
     /**
@@ -102,7 +113,15 @@ public class RuntimeHost {
         // 先生成稳定 runId 再入队，使 HTTP 202 响应和后续 SSE 事件可以关联同一次运行。
         String runId = UUID.randomUUID().toString();
         RunCommand command = new RunCommand(runId, sessionId, nextInput, RunMode.from(mode));
-        session.enqueue(() -> runs.execute(session, command));
+        if (!session.acceptRun(runId, nextInput, command.mode().name().toLowerCase())) {
+            return RunSubmission.rejected();
+        }
+        try {
+            session.enqueue(() -> runs.execute(session, command));
+        } catch (RuntimeException enqueueFailure) {
+            session.failEnqueue();
+            throw enqueueFailure;
+        }
         return RunSubmission.accepted(runId);
     }
 

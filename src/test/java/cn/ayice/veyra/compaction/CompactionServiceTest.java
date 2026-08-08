@@ -4,11 +4,10 @@ import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.context.WorkingMessage;
 import cn.ayice.veyra.compaction.CompactionConfig;
-import cn.ayice.veyra.compaction.CheckpointState.Candidate;
 import cn.ayice.veyra.compaction.CompactionService.Strategy;
 import cn.ayice.veyra.compaction.CompactionService.Trigger;
 import cn.ayice.veyra.compaction.MicroCompactor;
-import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.llm.AIService;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import dev.langchain4j.data.message.AiMessage;
@@ -32,10 +31,10 @@ class CompactionServiceTest {
     @Test
     void autoUsesCommittedSessionSummaryBeforeCallingLlmSummary() {
         CompactionConfig config = new CompactionConfig(14_500, 1, true, true, null, true);
-        CheckpointState checkpointState = new CheckpointState();
-        checkpointState.commit(new CheckpointState.Candidate("checkpoint summary", 1));
+        SessionSummaryState summaryState = new SessionSummaryState();
+        summaryState.commit(new SessionSummaryState.SummaryCandidate("session summary", 1));
         StubAIService ai = new StubAIService("unused");
-        CompactionService preparer = preparer(config, checkpointState, ai, new FileStateCache());
+        CompactionService preparer = preparer(config, summaryState, ai, new FileStateCache());
         List<WorkingMessage> history = List.of(
                 WorkingMessage.original(1, UserMessage.from("x".repeat(8_000))),
                 WorkingMessage.original(2, UserMessage.from("current request"))
@@ -50,7 +49,7 @@ class CompactionServiceTest {
 
         assertEquals(CompactionService.Strategy.SESSION_SUMMARY, prepared.strategy());
         assertEquals(0, ai.calls);
-        assertTrue(prepared.request().messages().toString().contains("checkpoint summary"));
+        assertTrue(prepared.request().messages().toString().contains("session summary"));
         assertTrue(prepared.request().messages().toString().contains("current request"));
         assertFalse(prepared.request().messages().toString().contains("x".repeat(100)));
     }
@@ -58,12 +57,12 @@ class CompactionServiceTest {
     @Test
     void manualCompactionRunsBelowThresholdAndCommitsValidatedCandidate() {
         CompactionConfig config = new CompactionConfig(1_000_000, 4_096, true, true, null, true);
-        CheckpointState checkpointState = new CheckpointState();
+        SessionSummaryState summaryState = new SessionSummaryState();
         StubAIService ai = new StubAIService("manual summary");
         FileStateCache fileStateCache = new FileStateCache();
         Path modified = Path.of("modified.txt").toAbsolutePath().normalize();
         fileStateCache.recordModified(modified);
-        CompactionService preparer = preparer(config, checkpointState, ai, fileStateCache);
+        CompactionService preparer = preparer(config, summaryState, ai, fileStateCache);
         List<WorkingMessage> history = new ArrayList<>();
         for (int sequence = 1; sequence <= 12; sequence++) {
             history.add(WorkingMessage.original(sequence, UserMessage.from("message " + sequence)));
@@ -78,14 +77,14 @@ class CompactionServiceTest {
 
         assertEquals(CompactionService.Strategy.LLM_SUMMARY, prepared.strategy());
         assertEquals(1, ai.calls);
-        assertEquals(2, checkpointState.current().orElseThrow().coveredSequence());
+        assertEquals(2, summaryState.current().orElseThrow().coveredSequence());
         assertTrue(prepared.request().messages().toString().contains("context-restoration"));
         assertTrue(prepared.request().messages().toString().contains(modified.toString()));
     }
 
     private static CompactionService preparer(
             CompactionConfig config,
-            CheckpointState checkpointState,
+            SessionSummaryState summaryState,
             StubAIService ai,
             FileStateCache fileStateCache
     ) {
@@ -94,7 +93,7 @@ class CompactionServiceTest {
                 contextBuilder,
                 config,
                 new MicroCompactor(),
-                checkpointState,
+                summaryState,
                 new SummaryCompactor(ai),
                 fileStateCache::recentModifiedPaths
         );

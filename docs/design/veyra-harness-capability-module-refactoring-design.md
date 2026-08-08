@@ -117,7 +117,7 @@ JSONL transcript 位于 `conversation.transcript`，活跃会话状态和重建�
 
 ### 5.1 顶层按能力，模块内部按职责
 
-顶层包用于表达 Harness 能力，例如 `memory`、`tool`、`session`。模块内部可以使用 `model`、`persistence`、`policy`、`checkpoint` 等子包表达局部职责。
+顶层包用于表达 Harness 能力，例如 `memory`、`tool`、`session`。模块内部可以使用 `model`、`persistence`、`policy`、`summary` 等子包表达局部职责。
 
 禁止重新建立全局技术层：
 
@@ -134,7 +134,7 @@ manager/
 session.persistence
 session.recovery
 tool.permission
-compaction.checkpoint
+compaction.summary
 memory.extraction
 ```
 
@@ -175,7 +175,7 @@ Veyra 不使用 JPA，因此不统一建立 `entity` 包。根据真实语义选
 | 服务输入输出和值对象 | `model` |
 | 追加式事实 | `event` |
 | 持久化行模型与编码 | `persistence` |
-| 压缩提交状态 | `checkpoint` |
+| 摘要提交状态 | `summary` |
 | 决策规则 | `policy` |
 | 外部框架实现 | `langchain4j` |
 
@@ -303,7 +303,7 @@ cn.ayice.veyra
 |   +-- model
 |   +-- policy
 |   +-- summary
-|   `-- checkpoint
+|   `-- summary
 |
 +-- memory
 |   +-- MemoryService.java
@@ -595,7 +595,7 @@ public final class CompactionService {
 
     public CompactionResult compact(ContextSnapshot snapshot, CompactionTrigger trigger);
 
-    public Optional<CompactionCheckpoint> checkpoint();
+    public Optional<SessionSummarySnapshot> sessionSummary();
 }
 ```
 
@@ -606,7 +606,7 @@ Compaction 模块拥有：
 - Session Summary；
 - LLM Summary；
 - Stable Point 校验；
-- Checkpoint 候选和提交；
+- Session Summary 候选和提交；
 - 压缩结果与边界。
 
 Runtime 只调用 `compactIfRequired` 并应用结果，不理解三级压缩的内部升级逻辑。
@@ -618,7 +618,7 @@ Runtime 只调用 `compactIfRequired` 并应用结果，不理解三级压缩的
 | `compaction.model` | 输入快照、触发、策略和结果值 |
 | `compaction.policy` | 阈值、稳定点和升级决策 |
 | `compaction.summary` | Micro 与 LLM 摘要算法 |
-| `compaction.checkpoint` | Candidate、Checkpoint 和原子提交状态 |
+| `compaction.summary` | SummaryCandidate、SummarySnapshot 和原子提交状态 |
 
 ### 9.6 Memory
 
@@ -853,7 +853,7 @@ AgentTool --> SubagentService
 | JSONL Session Journal | `session.persistence` | 跨进程 | 单 Session 追加有序 |
 | 恢复扫描和收敛结果 | `session.recovery` | 启动或按需恢复 | 单 Session 恢复互斥 |
 | Working Context | `context` 模型，Runtime 持有 | 单次模型调用/Run | 不跨线程共享可变副本 |
-| Compaction Checkpoint | `compaction` | 活跃 Session | 单调版本、原子提交 |
+| Session Summary Snapshot | `compaction` | 活跃 Session | 单调版本、原子提交 |
 | Long-term Memory | `memory` | 跨 Session | 文件更新原子化、提取 single-flight |
 | Permission Context | `tool` | Session | 由 Runtime 传入，ToolService 原子返回新快照 |
 | Subagent Task | `subagent` | 父 Run 或后台任务 | 任务 ID 唯一、终态单向转换 |
@@ -1018,7 +1018,7 @@ control.. 只能依赖 runtime..、control..、Java/Spring HTTP 类型
 
 ```text
 runtime.. 可以依赖能力模块的根 Service 和公开 model
-runtime.. 不得依赖 *.store..、*.persistence..、*.checkpoint.. 的内部实现
+runtime.. 不得依赖 *.store..、*.persistence..、*.summary.. 的内部实现
 ```
 
 例外：Runtime 可以依赖 `session.event.SessionEvent`，因为它是 Session 模块的公开追加协议。
@@ -1038,7 +1038,7 @@ memory.extraction.. 只能被 memory.. 和 boot.. 依赖
 session.persistence.. 只能被 session.. 和 boot.. 依赖
 session.recovery..    只能被 session.. 和 boot.. 依赖
 tool.permission..     只能被 tool..、runtime.. 和 subagent.. 通过公开类型依赖
-compaction.checkpoint.. 只能被 compaction.. 依赖
+compaction.summary.. 只能被 compaction.. 依赖
 ```
 
 ### 15.5 完整装配限制
@@ -1136,5 +1136,5 @@ tooling..
 6. `tool` 统一目录、Profile、权限、审批和执行生命周期。
 7. `subagent` 统一子 Agent 循环、任务管理和 AgentTool。
 8. 每个模块只设一个主要 Service，内部按真实子能力选择性细分。
-9. 不建立统一 `entity` 包，数据按 model、event、persistence、checkpoint 等真实语义归类。
+9. 不建立统一 `entity` 包，数据按 model、event、persistence、summary 等真实语义归类。
 10. Boot 是唯一完整装配点，不保留旧包兼容层。

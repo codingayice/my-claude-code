@@ -3,7 +3,7 @@ package cn.ayice.veyra.runtime.agent;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.compaction.CompactionConfig;
-import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.llm.AIService;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
@@ -79,7 +79,7 @@ class AgentLoopBlockingLimitTest {
                 10,
                 null,
                 sink,
-                new CheckpointState(),
+                new SessionSummaryState(),
                 null,
                 new FileStateCache(),
                 120_000,

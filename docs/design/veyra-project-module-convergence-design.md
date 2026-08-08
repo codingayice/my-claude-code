@@ -52,7 +52,7 @@ Config 与外部依赖
 
 ### 3.2 建立真实模块边界
 
-包名不只是文件分类。模块外部只能看到主服务和必要协议，不能直接创建内部 Store、Scheduler、Chunker、Checkpoint State 或 Dispatcher。
+包名不只是文件分类。模块外部只能看到主服务和必要协议，不能直接创建内部 Store、Scheduler、Chunker、Summary State 或 Dispatcher。
 
 ### 3.3 消除循环依赖
 
@@ -102,7 +102,7 @@ llm          LangChain4j 模型访问
 一个服务可以拥有多个同一生命周期内的操作：
 
 - `SessionService`：创建标识、读取历史、追加记录、列出会话；
-- `CompactionService`：准备请求、手动压缩、后台摘要、Checkpoint 和状态查询；
+- `CompactionService`：准备请求、手动压缩、后台摘要、Summary Snapshot 和状态查询；
 - `MemoryService`：remember、forget、list、show、recall 和 buildContext；
 - `ToolService`：授权、审批和执行；
 - `SubagentService`：同步执行、后台提交、查询、取消和通知。
@@ -242,7 +242,7 @@ cn.ayice.veyra
 │   ├── SummaryCompactor.java
 │   ├── MicroCompactor.java
 │   ├── BackgroundSummaryScheduler.java
-│   ├── CheckpointState.java
+│   ├── SessionSummaryState.java
 │   └── CompactBoundary.java
 │
 ├── memory
@@ -639,7 +639,7 @@ CompactionConfig             public
 SummaryCompactor             package-private
 MicroCompactor               package-private
 BackgroundSummaryScheduler   package-private
-CheckpointState              package-private
+SessionSummaryState          package-private
 CompactBoundary              package-private
 ```
 
@@ -649,7 +649,7 @@ CompactBoundary              package-private
 - `AutoCompactConfig + SessionSummaryConfig -> CompactionConfig`；
 - `CompactPrompts + ConversationChunker -> SummaryCompactor` 内部实现；
 - `SessionSummaryCoordinator -> BackgroundSummaryScheduler`；
-- `SessionCheckpointState -> CheckpointState`；
+- `SessionCheckpointState -> SessionSummaryState`；
 - Candidate、Result、Status 和内部枚举使用嵌套类型。
 
 `ContextBudgetService` 和 `FinalRequestValidator` 属于压缩准备流程，进入 `CompactionService` 内部，不再放在 Context。
@@ -814,7 +814,7 @@ ConversationChunker
 LlmSummaryCompactor
 SessionSummaryGenerator
 SessionSummaryCoordinator
-SessionCheckpointState
+SessionSummaryState
 MemoryPaths
 MemoryStore
 MemoryRecall
@@ -911,7 +911,7 @@ Context 不调用 Compaction，Memory 不调用 Runtime。
 | 单 Session Permission Context | `SessionRuntime` | 否 |
 | Agent/Chat History | 对应 Loop | 通过 Transcript 间接持久化 |
 | Session Transcript | `SessionService` / `TranscriptStore` | 是，JSONL |
-| Compaction Checkpoint | `CompactionService` | 当前阶段否 |
+| Session Summary Snapshot | `CompactionService` | 当前阶段否 |
 | Memory topic/index | `MemoryService` / `MemoryStore` | 是 |
 | Memory Extraction cursor | `MemoryExtractionCoordinator` | 当前阶段否 |
 | Subagent Task Map | `SubagentService` | 否 |
@@ -950,7 +950,7 @@ llm.AIService
 
 以下类型默认不公开：
 
-- Store、Recall、Scheduler、Checkpoint State；
+- Store、Recall、Scheduler、Summary State；
 - Parser、Formatter、Chunker 和 Prompt Helper；
 - Candidate、Pending Request 和 Commit Result；
 - 单次计算 Query/Result；
@@ -1020,7 +1020,7 @@ Harness 能力模块不得依赖 Runtime。只有 Control 和 Boot 可以直接�
 - Runtime：同 Session 串行、跨 Session 并行、审批隔离；
 - Session：JSONL 写入、读取、历史恢复和工作区隔离；
 - Context：Prompt、Memory Context、工具 Schema 和请求构造；
-- Compaction：三级压缩、Checkpoint、后台摘要和最终预算；
+- Compaction：三级压缩、Summary Snapshot、后台摘要和最终预算；
 - Memory：CRUD、召回、预算、文件一致性和敏感内容；
 - Tool：Profile、授权、审批、执行和异常归一化；
 - Subagent：同步、后台、取消、通知和 Profile；

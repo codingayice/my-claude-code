@@ -26,4 +26,16 @@ public interface RunTarget {
      * 把输入交给当前会话的无工具 Chat 循环执行。
      */
     void executeChat(String input);
+
+    /**
+     * 正常返回后持久化 Run 终态；无持久化能力的测试目标保持 no-op。
+     */
+    default void completeRun(Map<String, Object> payload) {
+    }
+
+    /**
+     * 未处理异常穿出后持久化 Run 失败终态。
+     */
+    default void failRun(Map<String, Object> payload) {
+    }
 }

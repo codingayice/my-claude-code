@@ -74,8 +74,8 @@ flowchart TD
     Micro --> ReMeasure1["重新构建并计量请求"]
     ReMeasure1 --> Enough1{"预算足够"}
     Enough1 -- "是" --> Send
-    Enough1 -- "否" --> Checkpoint["应用当前会话摘要检查点"]
-    Checkpoint --> ReMeasure2["重新构建并计量请求"]
+    Enough1 -- "否" --> SummarySnapshot["应用当前会话摘要快照"]
+    SummarySnapshot --> ReMeasure2["重新构建并计量请求"]
     ReMeasure2 --> Enough2{"预算足够"}
     Enough2 -- "是" --> Restore["加入必要的恢复提示"]
     Enough2 -- "否" --> Summary["LLM Summary Compact\n按完整回合分块摘要"]

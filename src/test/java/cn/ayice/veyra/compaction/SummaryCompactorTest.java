@@ -36,7 +36,7 @@ class SummaryCompactorTest {
         CompactionService.Result result = compactor.compact(history, CompactionService.Trigger.MANUAL, 100);
 
         assertEquals(CompactionService.Strategy.LLM_SUMMARY, result.strategy());
-        assertEquals(2, result.checkpointCandidate().orElseThrow().coveredSequence());
+        assertEquals(2, result.summaryCandidate().orElseThrow().coveredSequence());
         assertTrue(result.messages().get(0).message().toString().contains("CompactBoundary"));
         assertTrue(result.messages().stream().anyMatch(message -> message.message().toString().contains("current request")));
         assertFalse(result.messages().stream().anyMatch(message -> message.message().toString().contains("old request")));
@@ -65,7 +65,7 @@ class SummaryCompactorTest {
     }
 
     @Test
-    void generatesOnlyTheIncrementAfterPreviousCheckpoint() {
+    void generatesOnlyTheIncrementAfterPreviousSessionSummary() {
         CapturingAIService ai = new CapturingAIService(List.of("updated summary"));
         SummaryCompactor compactor = new SummaryCompactor(ai);
         BackgroundSummaryScheduler.Snapshot snapshot = new BackgroundSummaryScheduler.Snapshot(3, List.of(
@@ -74,9 +74,9 @@ class SummaryCompactorTest {
                 WorkingMessage.original(3, AiMessage.from("new conclusion"))
         ));
 
-        CheckpointState.Candidate candidate = compactor.generateCheckpoint(
+        SessionSummaryState.SummaryCandidate candidate = compactor.generateSessionSummary(
                 snapshot,
-                Optional.of(new CheckpointState.Checkpoint("old summary", 1, 1))
+                Optional.of(new SessionSummaryState.SummarySnapshot("old summary", 1, 1))
         );
 
         assertEquals(3, candidate.coveredSequence());
@@ -87,14 +87,14 @@ class SummaryCompactorTest {
     }
 
     @Test
-    void retriesOnceWithShorterOutputWhenCheckpointSummaryExceedsLimit() {
+    void retriesOnceWithShorterOutputWhenSessionSummaryExceedsLimit() {
         CapturingAIService ai = new CapturingAIService(List.of("x".repeat(200), "short"));
         SummaryCompactor compactor = new SummaryCompactor(ai, 100_000, 10, 1_000, 10, 5);
         BackgroundSummaryScheduler.Snapshot snapshot = new BackgroundSummaryScheduler.Snapshot(1, List.of(
                 WorkingMessage.original(1, UserMessage.from("task"))
         ));
 
-        CheckpointState.Candidate candidate = compactor.generateCheckpoint(snapshot, Optional.empty());
+        SessionSummaryState.SummaryCandidate candidate = compactor.generateSessionSummary(snapshot, Optional.empty());
 
         assertEquals("short", candidate.summaryText());
         assertEquals(2, ai.prompts.size());

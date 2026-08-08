@@ -4,7 +4,7 @@ import cn.ayice.veyra.memory.MemoryEntry;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.compaction.CompactionConfig;
-import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.memory.MemoryFileStore;
 import cn.ayice.veyra.memory.MemoryPaths;
@@ -77,7 +77,7 @@ class AgentLoopMemoryCommandTest {
                 10,
                 null,
                 AgentEventSink.NOOP,
-                new CheckpointState(),
+                new SessionSummaryState(),
                 null,
                 new FileStateCache(),
                 120_000,

@@ -12,6 +12,7 @@ import cn.ayice.veyra.control.dto.run.CreateRunResponse;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
+import cn.ayice.veyra.control.dto.session.SessionHistoryResponse;
 import cn.ayice.veyra.control.dto.session.UpdateSessionSettingsRequest;
 import cn.ayice.veyra.control.exception.AgentApiException;
 import org.springframework.http.HttpStatus;
@@ -93,6 +94,14 @@ public class AgentController {
     @GetMapping("/sessions/{sessionId}/transcript")
     public ApiResponse<TranscriptResponse> transcript(@PathVariable("sessionId") String sessionId) {
         return ApiResponse.success(application.transcript(sessionId));
+    }
+
+    /**
+     * 返回完成惰性恢复后的稳定事件历史。
+     */
+    @GetMapping("/sessions/{sessionId}/history")
+    public ApiResponse<SessionHistoryResponse> history(@PathVariable("sessionId") String sessionId) {
+        return ApiResponse.success(application.stableHistory(sessionId));
     }
 
     /**

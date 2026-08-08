@@ -1,6 +1,7 @@
 package cn.ayice.veyra.runtime.agent;
 
 import cn.ayice.veyra.session.persistence.TranscriptRecorder;
+import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
 import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.tool.ToolService;
 import cn.ayice.veyra.tool.ToolService.Authorization;
@@ -93,13 +94,13 @@ final class AgentToolCoordinator {
                 if (authorization.choice() == ToolExecutionConfirmation.Choice.DENY) {
                     log.info("   [工具]用户拒绝了工具调用");
                 }
-                events.toolRejected(request, authorization.rejectionReason());
                 ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
                         request,
                         "<rejected>" + authorization.rejectionReason() + "</rejected>"
                 );
-                messages = append(messages, resultMessage);
                 transcriptRecorder.record(resultMessage);
+                messages = append(messages, resultMessage);
+                events.toolRejected(request, authorization.rejectionReason());
                 continue;
             }
 
@@ -120,7 +121,7 @@ final class AgentToolCoordinator {
             // 同一轮中互不依赖的工具并行启动，以最长工具耗时作为整批耗时上界。
             for (Authorization authorization : approvedCalls) {
                 futures.add(CompletableFuture.supplyAsync(
-                        () -> toolEngine.execute(authorization, executionContext, MAIN_TOOL_POLICY),
+                        () -> executePersisted(authorization, executionContext),
                         toolExecutor
                 ));
             }
@@ -128,33 +129,45 @@ final class AgentToolCoordinator {
             // Future#get 构成轮次屏障：全部结果按请求顺序写回后，AgentLoop 才能进入下一轮模型调用。
             for (int index = 0; index < futures.size(); index++) {
                 ToolExecutionRequest request = approvedCalls.get(index).request();
+                Execution execution;
                 try {
-                    Execution execution = futures.get(index).get();
-                    ToolResult result = execution.result();
-                    String content = execution.content();
-                    events.toolCompleted(request, result, content);
-                    todoWriteUsed |= "TodoWrite".equals(request.name());
-                    memoryWritten |= result.success()
-                            && memoryExtractionCoordinator != null
-                            && memoryExtractionCoordinator.isMemoryWriteRequest(request);
-                    ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(request, content);
-                    messages = append(messages, resultMessage);
-                    transcriptRecorder.record(resultMessage);
+                    execution = futures.get(index).get();
                 } catch (Exception error) {
                     // 单个工具失败被规范化为 tool result，不中断同一批其他工具的结果收集。
                     log.error("工具执行失败, toolUseId={}, name={}", request.id(), request.name(), error);
-                    events.toolFailed(request, error);
                     ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
                             request,
                             "<error>工具执行失败: " + error.getMessage() + "</error>"
                     );
-                    messages = append(messages, resultMessage);
                     transcriptRecorder.record(resultMessage);
+                    messages = append(messages, resultMessage);
+                    events.toolFailed(request, error);
+                    continue;
                 }
+                ToolResult result = execution.result();
+                String content = execution.content();
+                ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(request, content);
+                transcriptRecorder.record(resultMessage);
+                messages = append(messages, resultMessage);
+                events.toolCompleted(request, result, content);
+                todoWriteUsed |= "TodoWrite".equals(request.name());
+                memoryWritten |= result.success()
+                        && memoryExtractionCoordinator != null
+                        && memoryExtractionCoordinator.isMemoryWriteRequest(request);
             }
         }
 
         return new Result(messages, permissionContext, todoWriteUsed, memoryWritten);
+    }
+
+    /**
+     * 将 durable started 事实紧邻真实工具调用写入，恢复时据此区分 NOT_EXECUTED 与 UNKNOWN。
+     */
+    private Execution executePersisted(Authorization authorization, PermissionContext executionContext) {
+        if (transcriptRecorder instanceof SessionJournalRecorder journal) {
+            journal.recordToolStarted(authorization.request().id(), authorization.request().name());
+        }
+        return toolEngine.execute(authorization, executionContext, MAIN_TOOL_POLICY);
     }
 
     /**

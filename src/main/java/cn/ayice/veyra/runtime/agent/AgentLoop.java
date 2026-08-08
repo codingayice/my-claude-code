@@ -9,7 +9,7 @@ import cn.ayice.veyra.compaction.CompactionService.Trigger;
 import cn.ayice.veyra.compaction.CompactionService;
 import cn.ayice.veyra.compaction.SummaryCompactor;
 import cn.ayice.veyra.compaction.MicroCompactor;
-import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
 import cn.ayice.veyra.session.persistence.TranscriptRecorder;
 import cn.ayice.veyra.session.event.AgentEventSink;
@@ -60,7 +60,7 @@ public class AgentLoop {
     private final CompactionConfig compactConfig;
     private final int maxRounds;
     private final BackgroundSummaryScheduler sessionSummaryCoordinator;
-    private final CheckpointState checkpointState;
+    private final SessionSummaryState summaryState;
     private final MemoryExtractionCoordinator memoryExtractionCoordinator;
     private final long modelCallTimeoutMs;
     private final TranscriptRecorder transcriptRecorder;
@@ -83,7 +83,7 @@ public class AgentLoop {
             int maxRounds,
             SubagentService subagentService,
             AgentEventSink eventSink,
-            CheckpointState checkpointState,
+            SessionSummaryState summaryState,
             BackgroundSummaryScheduler sessionSummaryCoordinator,
             FileStateCache fileStateCache,
             long modelCallTimeoutMs,
@@ -97,13 +97,13 @@ public class AgentLoop {
         }
         this.compactConfig = compactConfig;
         this.contextBuilder = contextBuilder;
-        this.checkpointState = checkpointState;
+        this.summaryState = summaryState;
         this.sessionSummaryCoordinator = sessionSummaryCoordinator;
         this.turnPreparer = new CompactionService(
                 contextBuilder,
                 compactConfig,
                 new MicroCompactor(),
-                checkpointState,
+                summaryState,
                 new SummaryCompactor(ai),
                 fileStateCache::recentModifiedPaths
         );
@@ -147,8 +147,8 @@ public class AgentLoop {
         if (sessionSummaryCoordinator != null) {
             sessionSummaryCoordinator.close();
         }
-        if (checkpointState != null) {
-            checkpointState.close();
+        if (summaryState != null) {
+            summaryState.close();
         }
         if (subagentService != null) {
             subagentService.shutdown();
@@ -184,9 +184,11 @@ public class AgentLoop {
 
             List<TaskNotification> notifications = drainTaskNotifications();
             if (!notifications.isEmpty()) {
-                state = state.appendOriginal(UserMessage.from(
+                UserMessage notificationMessage = UserMessage.from(
                         formatNotificationBlock("task_notifications", notifications)
-                )).markStable();
+                );
+                state = state.appendOriginal(notificationMessage).markStable();
+                transcriptRecorder.record(notificationMessage);
             }
 
             CompactionService.PreparedWorkingTurn prepared;
@@ -336,16 +338,20 @@ public class AgentLoop {
             int nextRound = state.turnCount() + 1;
             if (todoManager != null && todoManager.hasOpenItems()
                     && nextRound % TODO_REMINDER_GRACE_ROUNDS == 0) {
-                state = state.appendOriginal(UserMessage.from(
+                UserMessage reminder = UserMessage.from(
                         "<system-reminder>Todo 列表仍有未完成项。请继续处理或关闭这些事项后再进入下一步。</system-reminder>"
-                )).markStable();
+                );
+                state = state.appendOriginal(reminder).markStable();
+                transcriptRecorder.record(reminder);
             }
             if (!todoWriteUsed && nextRound >= TODO_REMINDER_GRACE_ROUNDS
                     && nextRound % TODO_REMINDER_GRACE_ROUNDS == 0
                     && todoManager != null && !todoManager.hasOpenItems()) {
-                state = state.appendOriginal(UserMessage.from(
+                UserMessage reminder = UserMessage.from(
                         "<system-reminder>你还没有使用 TodoWrite 工具规划任务。如果当前任务涉及 3 个以上独立步骤，请先用 TodoWrite 创建任务清单，再逐步执行。</system-reminder>"
-                )).markStable();
+                );
+                state = state.appendOriginal(reminder).markStable();
+                transcriptRecorder.record(reminder);
             }
             if (maxRounds > 0 && nextRound > maxRounds) {
                 state = state.withAiMessage(aiMessage)
@@ -422,25 +428,25 @@ public class AgentLoop {
             int recentMessages = (int) history.stream()
                     .filter(message -> message.sequence().isPresent())
                     .count();
-            String checkpointVersion = prepared.checkpointVersion() == null
+            String summaryVersion = prepared.summaryVersion() == null
                     ? "-"
-                    : prepared.checkpointVersion().toString();
+                    : prepared.summaryVersion().toString();
             return """
                     压缩策略: %s
                     压缩前 inputTokens: %d
                     压缩后 inputTokens: %d
                     覆盖消息数: %d
                     保留最近消息数: %d
-                    checkpointCommit: %s
-                    checkpointVersion: %s
+                    summaryCommit: %s
+                    summaryVersion: %s
                     """.formatted(
                     prepared.strategy(),
                     prepared.preCompactInputTokens(),
                     prepared.inputTokens(),
                     Math.max(0, originalMessagesBefore - recentMessages),
                     recentMessages,
-                    prepared.checkpointCommit() == null ? "SKIPPED" : prepared.checkpointCommit(),
-                    checkpointVersion
+                    prepared.summaryCommit() == null ? "SKIPPED" : prepared.summaryCommit(),
+                    summaryVersion
             ).trim();
         } catch (CompactionService.PreparationException failure) {
             events.compactionFailed(
@@ -453,7 +459,7 @@ public class AgentLoop {
     }
 
     /**
-     * 返回当前完整请求容量、最近边界和活跃 checkpoint，不修改上下文。
+     * 返回当前完整请求容量、最近边界和活跃会话摘要，不修改上下文。
      */
     public synchronized String compactionStatus() {
         CompactionService.CapacityInfo capacity = turnPreparer.inspect(
@@ -466,11 +472,11 @@ public class AgentLoop {
                 .reduce((first, second) -> second)
                 .map(Object::toString)
                 .orElse("none");
-        String checkpoint = checkpointState == null
+        String sessionSummary = summaryState == null
                 ? "none"
-                : checkpointState.current()
+                : summaryState.current()
                 .map(value -> "version=%d, coveredSequence=%d".formatted(
-                        value.checkpointVersion(),
+                        value.summaryVersion(),
                         value.coveredSequence()
                 ))
                 .orElse("none");
@@ -479,13 +485,13 @@ public class AgentLoop {
                 capacityState: %s
                 workingMessages: %d
                 latestBoundary: %s
-                checkpoint: %s
+                sessionSummary: %s
                 """.formatted(
                 capacity.inputTokens(),
                 capacity.capacityState(),
                 history.size(),
                 boundary,
-                checkpoint
+                sessionSummary
         ).trim();
     }
 

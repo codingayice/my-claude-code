@@ -6,6 +6,7 @@ package cn.ayice.veyra.control.dto.session;
 public record SessionResponse(
         String sessionId,
         String workingDir,
-        String permissionMode
+        String permissionMode,
+        String lastRunStatus
 ) {
 }

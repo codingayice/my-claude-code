@@ -75,8 +75,8 @@ public class ChatLoop {
             return error;
         }
 
-        history = appendMessage(messages, aiMessage);
         transcriptRecorder.record(aiMessage);
+        history = appendMessage(messages, aiMessage);
         String text = aiMessage.text() == null ? "" : aiMessage.text();
         String thinking = aiMessage.thinking() == null ? "" : aiMessage.thinking();
         eventSink.emit("assistant.message.completed", eventPayload(

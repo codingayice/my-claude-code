@@ -20,7 +20,7 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(BackgroundSummaryScheduler.class);
 
     private final SummaryCompactor summaryCompactor;
-    private final CheckpointState checkpointState;
+    private final SessionSummaryState summaryState;
     private final Executor executor;
     private final CompactionConfig.SummaryPolicy config;
     private final BiConsumer<String, Map<String, Object>> eventEmitter;
@@ -32,19 +32,19 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
 
     public BackgroundSummaryScheduler(
             SummaryCompactor summaryCompactor,
-            CheckpointState checkpointState,
+            SessionSummaryState summaryState,
             Executor executor
     ) {
-        this(summaryCompactor, checkpointState, executor, CompactionConfig.SummaryPolicy.defaults(), (type, payload) -> { });
+        this(summaryCompactor, summaryState, executor, CompactionConfig.SummaryPolicy.defaults(), (type, payload) -> { });
     }
 
     public BackgroundSummaryScheduler(
             SummaryCompactor summaryCompactor,
-            CheckpointState checkpointState,
+            SessionSummaryState summaryState,
             Executor executor,
             CompactionConfig.SummaryPolicy config
     ) {
-        this(summaryCompactor, checkpointState, executor, config, (type, payload) -> { });
+        this(summaryCompactor, summaryState, executor, config, (type, payload) -> { });
     }
 
     /**
@@ -52,13 +52,13 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
      */
     public BackgroundSummaryScheduler(
             SummaryCompactor summaryCompactor,
-            CheckpointState checkpointState,
+            SessionSummaryState summaryState,
             Executor executor,
             CompactionConfig.SummaryPolicy config,
             BiConsumer<String, Map<String, Object>> eventEmitter
     ) {
         this.summaryCompactor = Objects.requireNonNull(summaryCompactor, "summaryCompactor");
-        this.checkpointState = Objects.requireNonNull(checkpointState, "checkpointState");
+        this.summaryState = Objects.requireNonNull(summaryState, "summaryState");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.config = Objects.requireNonNull(config, "config");
         this.eventEmitter = Objects.requireNonNull(eventEmitter, "eventEmitter");
@@ -88,8 +88,8 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
         if (closed || capacityState != CompactionService.CapacityState.WARNING || warningRefreshSubmitted) {
             return false;
         }
-        long coveredSequence = checkpointState.current()
-                .map(CheckpointState.Checkpoint::coveredSequence)
+        long coveredSequence = summaryState.current()
+                .map(SessionSummaryState.SummarySnapshot::coveredSequence)
                 .orElse(0L);
         if (coveredSequence >= snapshot.endSequence()) {
             return false;
@@ -99,11 +99,11 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
     }
 
     /**
-     * 根据当前 checkpoint 后的 token 增量和工具调用数判断普通后台触发条件。
+     * 根据当前摘要覆盖位置后的 token 增量和工具调用数判断普通后台触发条件。
      */
     private boolean meetsIncrementalThreshold(BackgroundSummaryScheduler.Snapshot snapshot) {
-        long coveredSequence = checkpointState.current()
-                .map(CheckpointState.Checkpoint::coveredSequence)
+        long coveredSequence = summaryState.current()
+                .map(SessionSummaryState.SummarySnapshot::coveredSequence)
                 .orElse(0L);
         if (coveredSequence >= snapshot.endSequence()) {
             return false;
@@ -163,22 +163,22 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
         eventEmitter.accept("session_summary.started", Map.of("endSequence", snapshot.endSequence()));
         boolean succeeded = false;
         try {
-            CheckpointState.Candidate candidate = summaryCompactor.generateCheckpoint(snapshot, checkpointState.current());
-            CheckpointState.CommitResult commitResult = checkpointState.commit(candidate);
-            if (commitResult.status() == CheckpointState.CommitStatus.COMMITTED) {
-                CheckpointState.Checkpoint checkpoint = commitResult.checkpoint().orElseThrow();
+            SessionSummaryState.SummaryCandidate candidate = summaryCompactor.generateSessionSummary(snapshot, summaryState.current());
+            SessionSummaryState.CommitResult commitResult = summaryState.commit(candidate);
+            if (commitResult.status() == SessionSummaryState.CommitStatus.COMMITTED) {
+                SessionSummaryState.SummarySnapshot summary = commitResult.summary().orElseThrow();
                 eventEmitter.accept("session_summary.completed", Map.of(
-                        "coveredSequence", checkpoint.coveredSequence(),
-                        "checkpointVersion", checkpoint.checkpointVersion(),
+                        "coveredSequence", summary.coveredSequence(),
+                        "summaryVersion", summary.summaryVersion(),
                         "sourceTokens", TokenEstimator.estimate(WorkingMessage.unwrap(snapshot.messages())),
-                        "summaryTokens", TokenEstimator.estimateText(checkpoint.summaryText()),
+                        "summaryTokens", TokenEstimator.estimateText(summary.summaryText()),
                         "durationMs", System.currentTimeMillis() - startedAt
                 ));
             } else {
-                long currentCoveredSequence = commitResult.checkpoint()
-                        .map(CheckpointState.Checkpoint::coveredSequence)
+                long currentCoveredSequence = commitResult.summary()
+                        .map(SessionSummaryState.SummarySnapshot::coveredSequence)
                         .orElse(0L);
-                eventEmitter.accept("session_checkpoint.skipped", Map.of(
+                eventEmitter.accept("session_summary.skipped", Map.of(
                         "reason", commitResult.status(),
                         "candidateCoveredSequence", candidate.coveredSequence(),
                         "currentCoveredSequence", currentCoveredSequence
@@ -199,8 +199,8 @@ public final class BackgroundSummaryScheduler implements AutoCloseable {
         synchronized (this) {
             runningSnapshot = null;
             if (!closed && succeeded && dirtySnapshot != null) {
-                long coveredSequence = checkpointState.current()
-                        .map(CheckpointState.Checkpoint::coveredSequence)
+                long coveredSequence = summaryState.current()
+                        .map(SessionSummaryState.SummarySnapshot::coveredSequence)
                         .orElse(0L);
                 if (dirtySnapshot.endSequence() > coveredSequence) {
                     next = dirtySnapshot;

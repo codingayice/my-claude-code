@@ -16,13 +16,15 @@ Veyra 的上下文压缩采用严格的三级策略：
 Micro Compact
     ↓ 仍超过自动压缩阈值
 Session Summary Compact
-    ↓ 检查点不存在或压缩后仍超过阈值
+    ↓ 摘要快照不存在或压缩后仍超过阈值
 LLM Summary Compact
 ```
 
-三级策略之外，系统必须同时具备完整请求输入 token 预算、稳定压缩边界、会话级摘要检查点、压缩后修改文件路径提示、响应式重试、失败阻塞、并发控制、运行期原子提交和结构化事件，形成闭环。
+三级策略之外，系统必须同时具备完整请求输入 token 预算、稳定压缩边界、会话级摘要快照、压缩后修改文件路径提示、响应式重试、失败阻塞、并发控制、运行期原子提交和结构化事件，形成闭环。
 
-本设计中的 `Session Summary` 是当前会话的滚动摘要和压缩检查点，不是跨会话长期记忆。长期记忆仍由 `conversation.memory` 管理，只保存用户偏好、协作反馈和长期项目背景。
+本设计中的 `Session Summary` 是当前会话的滚动摘要快照，不是执行断点，也不是跨会话长期记忆。长期记忆仍由 `conversation.memory` 管理，只保存用户偏好、协作反馈和长期项目背景。
+
+术语修订：早期版本曾将该摘要称为 Compaction Checkpoint。当前代码和设计统一使用 `SessionSummarySnapshot`；`ExecutionCheckpoint` 保留给未来真正能够恢复执行位置的机制。
 
 ## 3. 设计原则
 
@@ -669,24 +671,24 @@ summaryTemplate
 
 Session Summary 输出硬上限默认 3,000 token，并且必须小于或等于当前摘要模型允许的最大输出 token。超过上限时使用更低输出上限有限重生成，不按字符截断正文，也不由 Java 解析或删除所谓“低价值章节”。
 
-## 15. Compaction Checkpoint
+## 15. Session Summary Snapshot
 
 ### 15.1 数据模型
 
 ```java
-public record CheckpointCandidate(
+public record SummaryCandidate(
         long coveredSequence,
         String summaryText
 ) {}
 
-public record CompactionCheckpoint(
-        long checkpointVersion,
+public record SummarySnapshot(
+        long summaryVersion,
         long coveredSequence,
         String summaryText
 ) {}
 ```
 
-摘要生成任务只构造 `CheckpointCandidate`。`SessionCheckpointState` 提交成功后才补充分配的运行期 `checkpointVersion`，返回正式 `CompactionCheckpoint`。摘要输入 token、输出 token 和生成耗时直接写入现有事件，不复制进 `CompactionResult` 或长期无人读取的 checkpoint 字段。
+摘要生成任务只构造 `SummaryCandidate`。`SessionSummaryState` 提交成功后才补充分配的运行期 `summaryVersion`，返回正式 `SummarySnapshot`。摘要输入 token、输出 token 和生成耗时直接写入现有事件，不复制进 `CompactionResult` 或长期无人读取的摘要字段。
 
 `coveredSequence` 表示 `summaryText` 实际覆盖的最后一条原始消息序号，必须取自摘要输入边界上的真实 sequence，不能由消息数量、当前列表下标或摘要模型输出推导，并且不能超过任务快照的 `endSequence`。后台 `SessionSummaryGenerator` 把快照上界之前的全部稳定增量合并进摘要，因此直接使用 `snapshot.endSequence()`；前台 `LlmSummaryCompactor` 会保留 recent 原文，因此只能使用 old history 最后一条原始消息的 sequence。该序号只在当前活跃进程中有效，不承诺在进程重启后仍可定位相同消息。
 
@@ -696,31 +698,31 @@ public record CompactionCheckpoint(
 
 ```text
 SessionRuntime
-`-- SessionCheckpointState
-    `-- current: CompactionCheckpoint | empty
+`-- SessionSummaryState
+    `-- current: SummarySnapshot | empty
 ```
 
-`SessionCheckpointState` 由 Session Runtime 创建并独占，不注册为跨 Session 单例。Session Summary 不再写入项目共享的 `session-memory/summary.md`，旧路径不迁移、不兼容读取。Session 关闭后清空当前 checkpoint；新进程自然从空状态开始。
+`SessionSummaryState` 由 Session Runtime 创建并独占，不注册为跨 Session 单例。Session Summary 不再写入项目共享的 `session-memory/summary.md`，旧路径不迁移、不兼容读取。Session 关闭后清空当前摘要快照；新进程自然从空状态开始。
 
 ### 15.3 运行期原子提交
 
 ```text
-SessionCheckpointState.commit(candidate)
-  → 在 Session 提交锁内读取关闭状态和当前 checkpoint
+SessionSummaryState.commit(candidate)
+  → 在 Session 提交锁内读取关闭状态和当前摘要快照
   → State 已关闭时拒绝提交
   → 验证 candidate.coveredSequence > current.coveredSequence
-  → 在锁内分配 checkpointVersion
-  → 构造新的不可变 CompactionCheckpoint
-  → 原子替换 current checkpoint
+  → 在锁内分配 summaryVersion
+  → 构造新的不可变 SummarySnapshot
+  → 原子替换 current 摘要快照
 ```
 
-AUTO 后台摘要由 `SessionSummaryCoordinator` 提交；前台 AUTO、MANUAL 和 REACTIVE 的 LLM Summary 只有在最终请求低于阈值且通过只读结构验证后才由 `AgentTurnPreparer` 提交。所有提交都必须通过同一个 `SessionCheckpointState.commit(...)` 入口，摘要生成器和 LLM Compactor 不直接修改状态。未通过最终预算或结构验证的中间 pass 不得提交 candidate。旧覆盖范围不得覆盖新结果；committed cursor 直接取 `current.coveredSequence`，不维护第二份可变游标。
+AUTO 后台摘要由 `SessionSummaryCoordinator` 提交；前台 AUTO、MANUAL 和 REACTIVE 的 LLM Summary 只有在最终请求低于阈值且通过只读结构验证后才由 `AgentTurnPreparer` 提交。所有提交都必须通过同一个 `SessionSummaryState.commit(...)` 入口，摘要生成器和 LLM Compactor 不直接修改状态。未通过最终预算或结构验证的中间 pass 不得提交 candidate。旧覆盖范围不得覆盖新结果；committed cursor 直接取 `current.coveredSequence`，不维护第二份可变游标。
 
 ### 15.4 读取与生命周期
 
-`SessionCheckpointState.current()` 只返回当前已提交 checkpoint 或空值。摘要非空和 token 硬上限在构造 `CheckpointCandidate` 前检查；读取时不重复校验版本或格式。`coveredSequence` 来自 Stable Point 的不可变快照，State 只接受覆盖范围向前推进的 candidate。会话身份由独占该 State 的 Session Runtime 提供，不在 candidate 和 checkpoint 中重复保存。
+`SessionSummaryState.current()` 只返回当前已提交摘要快照或空值。摘要非空和 token 硬上限在构造 `SummaryCandidate` 前检查；读取时不重复校验版本或格式。`coveredSequence` 来自 Stable Point 的不可变快照，State 只接受覆盖范围向前推进的 candidate。会话身份由独占该 State 的 Session Runtime 提供，不在 candidate 和摘要快照中重复保存。
 
-Session 关闭时先停止接受新 candidate，再清空 current checkpoint。未来若需要重启恢复，checkpoint 必须与 transcript 进入同一会话持久化协议，共用可恢复的消息标识和一致性边界，不在本组件中单独增加文件加载逻辑。
+Session 关闭时先停止接受新 candidate，再清空 current 摘要快照。重启恢复时，摘要快照必须与 transcript 进入同一会话持久化协议，共用可恢复的消息标识和一致性边界，不在压缩组件中单独增加文件加载逻辑。
 
 ## 16. 第二级：Session Summary Compact
 

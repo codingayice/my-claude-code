@@ -12,6 +12,8 @@ import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptEntryResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
 import cn.ayice.veyra.control.dto.session.UpdateSessionSettingsRequest;
+import cn.ayice.veyra.control.dto.session.SessionHistoryResponse;
+import cn.ayice.veyra.control.dto.session.StableEventResponse;
 import cn.ayice.veyra.control.exception.AgentApiException;
 import cn.ayice.veyra.runtime.CommandOption;
 import cn.ayice.veyra.runtime.CommandResult;
@@ -86,6 +88,22 @@ public class AgentApplicationService {
     }
 
     /**
+     * 返回恢复完成后的稳定事件历史，供桌面端复用实时 reducer。
+     */
+    public SessionHistoryResponse stableHistory(String sessionId) {
+        return new SessionHistoryResponse(runtimeHost.stableHistory(sessionId).stream()
+                .map(event -> new StableEventResponse(
+                        event.seq(),
+                        event.sessionId(),
+                        event.runId(),
+                        event.type(),
+                        event.timestampMs(),
+                        event.payload()
+                ))
+                .toList());
+    }
+
+    /**
      * 提交一次 Agent 或 Chat Run，并返回稳定运行标识。
      */
     public CreateRunResponse createRun(String sessionId, String input, String mode) {
@@ -138,7 +156,12 @@ public class AgentApplicationService {
      * 把运行时会话状态转换为控制面响应。
      */
     private SessionResponse toSessionResponse(SessionState session) {
-        return new SessionResponse(session.sessionId(), session.workingDir(), session.permissionMode());
+        return new SessionResponse(
+                session.sessionId(),
+                session.workingDir(),
+                session.permissionMode(),
+                session.lastRunStatus()
+        );
     }
 
     /**

@@ -4,7 +4,7 @@ import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.compaction.CompactionConfig;
 import cn.ayice.veyra.compaction.SummaryCompactor;
-import cn.ayice.veyra.compaction.CheckpointState;
+import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
 import cn.ayice.veyra.runtime.session.SessionRuntime;
 import cn.ayice.veyra.runtime.session.RuntimeSessionRegistry;
@@ -28,6 +28,10 @@ import cn.ayice.veyra.tool.background.BackgroundManager;
 import cn.ayice.veyra.runtime.chat.ChatLoop;
 import cn.ayice.veyra.session.persistence.StoreBackedTranscriptRecorder;
 import cn.ayice.veyra.session.persistence.TranscriptStore;
+import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
+import cn.ayice.veyra.session.persistence.SessionJournalStore;
+import cn.ayice.veyra.session.recovery.SessionRecovery;
+import cn.ayice.veyra.session.SessionSettings;
 import cn.ayice.veyra.tool.BaseTool;
 import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.subagent.tool.AgentTool;
@@ -51,6 +55,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.Map;
+import java.util.function.BiConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,6 +70,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
 
     private final AppConfig config;
     private final TranscriptStore transcriptStore;
+    private final SessionJournalStore journalStore;
     private final Executor runExecutor;
     private final Executor taskExecutor;
     private final Executor ioExecutor;
@@ -82,6 +89,44 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
     ) {
         this.config = config;
         this.transcriptStore = transcriptStore;
+        this.journalStore = null;
+        this.runExecutor = runExecutor;
+        this.taskExecutor = taskExecutor;
+        this.ioExecutor = ioExecutor;
+        this.ai = new AIService(config);
+        String workspace = canonicalWorkspace(config.getWorkspace());
+        MemoryPaths paths = new MemoryPaths(config.getLongTermMemoryDir(), workspace);
+        MemoryFileStore store = new MemoryFileStore(
+                paths,
+                config.getMemoryMaxTopicBytes(),
+                config.getMemoryMaxIndexLines(),
+                config.getMemoryMaxIndexBytes(),
+                config.getMemoryMaxScannedTopics()
+        );
+        this.memoryService = new MemoryService(
+                store,
+                ai,
+                ioExecutor,
+                config.getMemoryMaxAlwaysContextBytes(),
+                config.getMemoryMaxRecallItems(),
+                config.getMemoryMaxRecalledTopicBytes(),
+                config.getMemoryMaxTurnContextBytes()
+        );
+    }
+
+    /**
+     * 使用 Durable Session Journal 创建生产运行时工厂。
+     */
+    public SessionRuntimeFactory(
+            AppConfig config,
+            SessionJournalStore journalStore,
+            Executor runExecutor,
+            Executor taskExecutor,
+            Executor ioExecutor
+    ) {
+        this.config = config;
+        this.transcriptStore = null;
+        this.journalStore = journalStore;
         this.runExecutor = runExecutor;
         this.taskExecutor = taskExecutor;
         this.ioExecutor = ioExecutor;
@@ -111,12 +156,46 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
      */
     @Override
     public SessionRuntime create(String sessionId, List<ChatMessage> initialHistory) {
+        SessionSettings settings = new SessionSettings(
+                Path.of(config.getWorkspace()),
+                config.getPermissionMode()
+        );
+        return createRuntime(sessionId, initialHistory, null, settings, "idle");
+    }
+
+    /** 使用 Journal 恢复投影装配会话独占运行时。 */
+    @Override
+    public SessionRuntime create(String sessionId, SessionRecovery.RecoveryResult recovery) {
+        return createRuntime(
+                sessionId,
+                recovery.agentHistory(),
+                recovery.sessionSummary().orElse(null),
+                recovery.settings(),
+                recovery.lastRunStatus()
+        );
+    }
+
+    /** 集中装配新建和恢复 Session 共用的完整对象图。 */
+    private SessionRuntime createRuntime(
+            String sessionId,
+            List<ChatMessage> initialHistory,
+            SessionSummaryState.SummarySnapshot restoredSummary,
+            SessionSettings restoredSettings,
+            String lastRunStatus
+    ) {
         // 首先创建会话独占的事件、审批、权限和转录组件，避免可变状态跨会话共享。
         SessionEventStream events = new SessionEventStream(sessionId);
         ToolApprovalQueue confirmation = new ToolApprovalQueue(events);
-        PermissionContextStore permissionContextStore = new PermissionContextStore(buildPermissionContext(config));
-        SessionAgentEventSink eventSink = new SessionAgentEventSink(events);
-        StoreBackedTranscriptRecorder recorder = new StoreBackedTranscriptRecorder(sessionId, transcriptStore);
+        PermissionContextStore permissionContextStore = new PermissionContextStore(
+                buildPermissionContext(restoredSettings)
+        );
+        SessionJournalRecorder journalRecorder = journalStore == null
+                ? null
+                : new SessionJournalRecorder(sessionId, journalStore);
+        SessionAgentEventSink eventSink = new SessionAgentEventSink(events, journalRecorder);
+        cn.ayice.veyra.session.persistence.TranscriptRecorder recorder = journalRecorder == null
+                ? new StoreBackedTranscriptRecorder(sessionId, transcriptStore)
+                : journalRecorder;
 
         FileStateCache fileStateCache = new FileStateCache();
         SubagentRuntime agentRuntime = new SubagentRuntime(
@@ -127,8 +206,9 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 permissionContextStore,
                 this::createSubagentToolCatalog
         );
-        SubagentService subagentService = new SubagentService(agentRuntime, taskExecutor, eventSink::emit);
-        BackgroundManager backgroundManager = new BackgroundManager(ioExecutor, eventSink::emit);
+        BiConsumer<String, Map<String, Object>> taskEvents = durableTaskEvents(eventSink, journalRecorder);
+        SubagentService subagentService = new SubagentService(agentRuntime, taskExecutor, taskEvents);
+        BackgroundManager backgroundManager = new BackgroundManager(ioExecutor, taskEvents);
         TodoManager todoManager = new TodoManager(eventSink::emit);
         ToolCatalog toolCatalog = ToolCatalog.create(List.of(
                 new BashTool(),
@@ -153,7 +233,14 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 memoryService,
                 compactConfig.contextTokenBudget()
         );
-        CheckpointState checkpointState = new CheckpointState();
+        SessionSummaryState summaryState = new SessionSummaryState(
+                restoredSummary,
+                summary -> {
+                    if (journalRecorder != null) {
+                        journalRecorder.recordSessionSummary(summary);
+                    }
+                }
+        );
         CompactionConfig.SummaryPolicy sessionSummaryConfig = CompactionConfig.SummaryPolicy.defaults();
         if (sessionSummaryConfig.maxInputTokens() + sessionSummaryConfig.maxSummaryTokens()
                 > compactConfig.effectiveWindow()
@@ -163,7 +250,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
         }
         BackgroundSummaryScheduler sessionSummaryCoordinator = new BackgroundSummaryScheduler(
                 new SummaryCompactor(ai, sessionSummaryConfig),
-                checkpointState,
+                summaryState,
                 ioExecutor,
                 sessionSummaryConfig,
                 eventSink::emit
@@ -191,7 +278,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 config.getMaxRounds(),
                 subagentService,
                 eventSink,
-                checkpointState,
+                summaryState,
                 sessionSummaryCoordinator,
                 fileStateCache,
                 config.getModelTimeoutSeconds() * 1000L,
@@ -220,7 +307,9 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                         agentLoop::compactNow,
                         agentLoop::compactionStatus
                 ),
-                runExecutor
+                runExecutor,
+                journalRecorder,
+                lastRunStatus
         );
     }
 
@@ -251,6 +340,41 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 .workingDir(workspacePath)
                 .addAllowedDirectory(workspacePath)
                 .build();
+    }
+
+    /** 根据持久化设置重建权限上下文。 */
+    private static PermissionContext buildPermissionContext(SessionSettings settings) {
+        return PermissionContext.builder()
+                .mode(PermissionMode.fromString(settings.permissionMode()))
+                .workingDir(settings.workingDir())
+                .addAllowedDirectory(settings.workingDir())
+                .build();
+    }
+
+    /** 将任务稳定事实先写 Journal，再转发到当前进程事件流。 */
+    private static BiConsumer<String, Map<String, Object>> durableTaskEvents(
+            SessionAgentEventSink eventSink,
+            SessionJournalRecorder recorder
+    ) {
+        return (type, payload) -> {
+            if (recorder != null) {
+                String taskId = String.valueOf(payload.getOrDefault("taskId", ""));
+                if ("task.started".equals(type)) {
+                    recorder.recordTaskStarted(
+                            taskId,
+                            String.valueOf(payload.getOrDefault("taskType", "unknown")),
+                            String.valueOf(payload.getOrDefault("description", ""))
+                    );
+                } else if (type.startsWith("task.")) {
+                    recorder.recordTaskFinished(
+                            taskId,
+                            String.valueOf(payload.getOrDefault("status", type.substring("task.".length()))),
+                            String.valueOf(payload.getOrDefault("content", ""))
+                    );
+                }
+            }
+            eventSink.emit(type, payload);
+        };
     }
 
     /**

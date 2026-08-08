@@ -7,8 +7,8 @@ import cn.ayice.veyra.session.SessionService;
 import cn.ayice.veyra.runtime.RunCoordinator;
 import cn.ayice.veyra.control.document.DocumentExportService;
 import cn.ayice.veyra.session.persistence.SessionPathResolver;
-import cn.ayice.veyra.session.persistence.TranscriptRestorer;
-import cn.ayice.veyra.session.persistence.TranscriptStore;
+import cn.ayice.veyra.session.persistence.SessionJournalStore;
+import cn.ayice.veyra.session.recovery.SessionRecovery;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -62,16 +62,20 @@ public class RuntimeConfiguration {
      * 创建基于项目隔离路径的 JSONL 转录存储。
      */
     @Bean
-    public TranscriptStore transcriptStore(AppConfig config) {
-        return new TranscriptStore(new SessionPathResolver(config.getMemoryDir(), config.getWorkspace()));
+    public SessionJournalStore sessionJournalStore(AppConfig config) {
+        return new SessionJournalStore(new SessionPathResolver(config.getMemoryDir(), config.getWorkspace()));
     }
 
     /**
      * 创建将持久化条目恢复为模型消息的恢复器。
      */
     @Bean
-    public TranscriptRestorer transcriptRestorer() {
-        return new TranscriptRestorer();
+    public SessionRecovery sessionRecovery(AppConfig config, SessionJournalStore journalStore) {
+        return new SessionRecovery(
+                journalStore,
+                java.nio.file.Path.of(config.getWorkspace()),
+                config.getPermissionMode()
+        );
     }
 
     /**
@@ -80,12 +84,12 @@ public class RuntimeConfiguration {
     @Bean
     public SessionRuntimeFactory sessionRuntimeFactory(
             AppConfig config,
-            TranscriptStore transcriptStore,
+            SessionJournalStore journalStore,
             @Qualifier("agentRunExecutor") ExecutorService runExecutor,
             @Qualifier("agentTaskExecutor") ExecutorService taskExecutor,
             @Qualifier("agentIoExecutor") ExecutorService ioExecutor
     ) {
-        return new SessionRuntimeFactory(config, transcriptStore, runExecutor, taskExecutor, ioExecutor);
+        return new SessionRuntimeFactory(config, journalStore, runExecutor, taskExecutor, ioExecutor);
     }
 
     /**
@@ -93,19 +97,19 @@ public class RuntimeConfiguration {
      */
     @Bean(destroyMethod = "close")
     public RuntimeSessionRegistry runtimeSessionRegistry(
-            TranscriptStore transcriptStore,
-            TranscriptRestorer transcriptRestorer,
+            SessionJournalStore journalStore,
+            SessionRecovery sessionRecovery,
             SessionRuntimeFactory runtimeFactory
     ) {
-        return new RuntimeSessionRegistry(transcriptStore, transcriptRestorer, runtimeFactory);
+        return new RuntimeSessionRegistry(journalStore, sessionRecovery, runtimeFactory);
     }
 
     /**
      * 创建运行编排访问会话状态和持久化数据的统一服务入口。
      */
     @Bean
-    public SessionService sessionService(TranscriptStore transcriptStore) {
-        return new SessionService(transcriptStore);
+    public SessionService sessionService(SessionJournalStore journalStore) {
+        return new SessionService(journalStore);
     }
 
     /**

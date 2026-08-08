@@ -22,11 +22,11 @@ class BackgroundSummarySchedulerTest {
     @Test
     void coalescesConcurrentRequestsIntoTheLatestDirtySnapshot() {
         QueuedExecutor executor = new QueuedExecutor();
-        CheckpointState checkpointState = new CheckpointState();
+        SessionSummaryState summaryState = new SessionSummaryState();
         SummaryCompactor summaryCompactor = new SummaryCompactor(new StubAIService());
         BackgroundSummaryScheduler coordinator = new BackgroundSummaryScheduler(
                 summaryCompactor,
-                checkpointState,
+                summaryState,
                 executor,
                 new CompactionConfig.SummaryPolicy(1, 1, 1, 1, 12_000, 3_000, 1_800)
         );
@@ -40,8 +40,8 @@ class BackgroundSummarySchedulerTest {
         assertEquals(1, executor.size());
         executor.runNext();
 
-        assertEquals(3, checkpointState.current().orElseThrow().coveredSequence());
-        assertEquals(2, checkpointState.current().orElseThrow().checkpointVersion());
+        assertEquals(3, summaryState.current().orElseThrow().coveredSequence());
+        assertEquals(2, summaryState.current().orElseThrow().summaryVersion());
     }
 
     private static BackgroundSummaryScheduler.Snapshot snapshot(int endSequence) {

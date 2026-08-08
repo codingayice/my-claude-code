@@ -38,6 +38,13 @@ public class SessionPathResolver {
     }
 
     /**
+     * 返回与旧 transcript 物理隔离的新 Durable Journal 路径。
+     */
+    public Path journalPath(String sessionId) {
+        return projectDir().resolve(sessionId + ".journal.jsonl");
+    }
+
+    /**
      * 将路径开头的波浪号展开为当前用户主目录。
      */
     private static Path expandHome(String memoryDir) {

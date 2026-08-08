@@ -34,6 +34,7 @@ public class RunCoordinator {
             } else {
                 target.executeAgent(command.input());
             }
+            target.completeRun(Map.of("reason", "completed"));
         } catch (Exception e) {
             // Run 边界记录完整堆栈，对外事件只发送稳定且可展示的错误摘要。
             String message = safeErrorMessage(e);
@@ -43,6 +44,7 @@ public class RunCoordinator {
                     "error", message,
                     "runId", command.runId()
             ));
+            target.failRun(Map.of("reason", "unhandled_exception", "content", message));
         } finally {
             MDC.remove("runId");
             MDC.remove("sessionId");
