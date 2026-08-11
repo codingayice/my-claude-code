@@ -122,6 +122,11 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         return pendingInputs.steer(messageId);
     }
 
+    /** 取消尚未被 AgentLoop 或后续 Run 消费的输入。 */
+    public boolean cancelPendingInput(String messageId) {
+        return pendingInputs.cancel(messageId);
+    }
+
     /** 在当前 Run 之后领取指定待处理输入。 */
     public PendingInputQueue.Message takePendingInputForNextRun(String messageId) {
         return pendingInputs.takeForNextRun(messageId);

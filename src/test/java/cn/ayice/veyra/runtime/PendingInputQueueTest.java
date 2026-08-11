@@ -12,6 +12,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PendingInputQueueTest {
 
     @Test
+    void cancelsFollowupAndSteeringMessagesBeforeTheyAreConsumed() {
+        PendingInputQueue queue = new PendingInputQueue();
+        PendingInputQueue.Message followup = queue.addFollowup("稍后执行", RunMode.AGENT);
+        PendingInputQueue.Message steering = queue.addFollowup("调整方向", RunMode.AGENT);
+        assertTrue(queue.steer(steering.id()));
+
+        assertTrue(queue.cancel(followup.id()));
+        assertTrue(queue.cancel(steering.id()));
+        assertFalse(queue.cancel(steering.id()));
+        assertNull(queue.takeForNextRun(followup.id()));
+        assertTrue(queue.drainSteers().isEmpty());
+    }
+
+    @Test
     void movesAgentFollowupToSteerExactlyOnce() {
         PendingInputQueue queue = new PendingInputQueue();
         PendingInputQueue.Message message = queue.addFollowup("调整方向", RunMode.AGENT);

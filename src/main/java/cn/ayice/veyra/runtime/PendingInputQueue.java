@@ -32,6 +32,21 @@ public final class PendingInputQueue {
         return true;
     }
 
+    /** 取消一条尚未被当前或后续 Run 消费的输入。 */
+    public synchronized boolean cancel(String messageId) {
+        Message found = find(followups, messageId);
+        if (found != null) {
+            followups.remove(found);
+            return true;
+        }
+        found = find(steers, messageId);
+        if (found != null) {
+            steers.remove(found);
+            return true;
+        }
+        return false;
+    }
+
     /** 在 AgentLoop 轮次边界按提交顺序取走全部引导消息。 */
     public synchronized List<Message> drainSteers() {
         List<Message> result = new ArrayList<>(steers);

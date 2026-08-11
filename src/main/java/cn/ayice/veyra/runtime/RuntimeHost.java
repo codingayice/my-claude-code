@@ -168,6 +168,16 @@ public class RuntimeHost {
         return moved;
     }
 
+    /** 取消一条尚未被消费的追随或引导输入。 */
+    public boolean cancelFollowup(String sessionId, String messageId) {
+        SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
+        boolean cancelled = session.cancelPendingInput(messageId);
+        if (cancelled) {
+            session.emit("input.cancelled", java.util.Map.of("messageId", messageId));
+        }
+        return cancelled;
+    }
+
     /**
      * 返回指定会话尚未处理的工具审批请求。
      */

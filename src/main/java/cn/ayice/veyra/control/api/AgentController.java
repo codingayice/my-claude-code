@@ -19,6 +19,7 @@ import cn.ayice.veyra.control.dto.session.UpdateSessionSettingsRequest;
 import cn.ayice.veyra.control.exception.AgentApiException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -136,6 +137,18 @@ public class AgentController {
     ) {
         if (!application.steerFollowup(sessionId, messageId)) {
             throw new AgentApiException(HttpStatus.CONFLICT, "followup is no longer steerable");
+        }
+        return ApiResponse.success(Map.of("ok", true));
+    }
+
+    /** 取消尚未被 AgentLoop 或后续 Run 消费的输入。 */
+    @DeleteMapping("/sessions/{sessionId}/followups/{messageId}")
+    public ApiResponse<Map<String, Object>> cancelFollowup(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("messageId") String messageId
+    ) {
+        if (!application.cancelFollowup(sessionId, messageId)) {
+            throw new AgentApiException(HttpStatus.CONFLICT, "followup is no longer cancellable");
         }
         return ApiResponse.success(Map.of("ok", true));
     }

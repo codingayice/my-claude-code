@@ -6,14 +6,19 @@ import { readFile, stat, writeFile } from "@tauri-apps/plugin-fs"
 import { open as openPath } from "@tauri-apps/plugin-shell"
 import { word, type OoJsonWord } from "@/lib/oojson-word"
 import {
+  Bot,
   Blocks,
+  ChevronDown,
+  ChevronRight,
+  Ellipsis,
   FileCheck2,
   FilePlus2,
   GraduationCap,
-  History,
   Loader2,
-  ListTodo,
+  MessageCirclePlus,
   Plus,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
   Presentation,
   Save,
@@ -21,7 +26,6 @@ import {
   Search,
   RefreshCw,
   Table2,
-  MessageSquare,
   type LucideIcon,
 } from "lucide-react"
 
@@ -38,7 +42,6 @@ import {
   type DocEntry,
   type DocFile,
 } from "@/components/document-tree"
-import { ModuleRail, type ModuleRailItem } from "@/components/module-rail"
 import ChatPanel, { ensureAgentService } from "@/components/chat-panel"
 import { WordPreviewPane, type WordPreviewPaneHandle } from "@/components/word-preview-pane"
 import { Badge } from "@/components/ui/badge"
@@ -54,6 +57,19 @@ import {
   Sheet,
   SheetContent,
 } from "@/components/ui/sheet"
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+} from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
 import { agentApi, type AgentSessionRecord } from "@/lib/agent-api"
 
@@ -102,11 +118,16 @@ function WorkspaceAction({
   )
 }
 
-const MODULES: ModuleRailItem[] = [
-  { id: "ai", label: "助手", icon: MessageSquare },
-  { id: "apps", label: "应用", icon: Blocks },
-  { id: "tasks", label: "任务", icon: ListTodo },
-  { id: "history", label: "历史", icon: History },
+const MODULES: Array<{
+  id: WorkspaceModule
+  label: string
+  description?: string
+  icon: LucideIcon
+}> = [
+  { id: "ai", label: "助手", icon: Bot },
+  { id: "apps", label: "专家", description: "文档·学习", icon: Blocks },
+  { id: "tasks", label: "自动化", icon: RefreshCw },
+  { id: "history", label: "更多", description: "历史记录", icon: Ellipsis },
 ]
 
 const WORKSPACE_APP_ICONS: Record<WorkspaceApp["iconKey"], LucideIcon> = {
@@ -239,6 +260,7 @@ function App() {
   })
   const [activeAssistantSessionId, setActiveAssistantSessionId] = useState<string | null>(null)
   const [assistantSessionsRevision, setAssistantSessionsRevision] = useState(0)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [session, setSession] = useState<SessionState>(() => createBlankSession())
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
   const [treeEntries, setTreeEntries] = useState<DocEntry[]>([])
@@ -477,23 +499,24 @@ function App() {
         title="Veyra"
       />
 
-      <div className="flex min-h-0 flex-1">
-        <ModuleRail
-          activeId={activeModule}
-          items={MODULES}
-          onChange={(id) => setActiveModule(id as WorkspaceModule)}
+      <SidebarProvider className="min-h-0 flex-1">
+        <WorkspaceSidebar
+          activeModule={activeModule}
+          activeSessionId={activeAssistantSessionId}
+          collapsed={sidebarCollapsed}
+          onCollapsedChange={setSidebarCollapsed}
+          onModuleChange={setActiveModule}
+          onNewSession={createAssistantSession}
+          onOpenSession={openAssistantSession}
+          refreshKey={assistantSessionsRevision}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
           <main className="flex min-h-0 flex-1 flex-col">
             {activeModule === "ai" ? (
               <AiWorkspace
-                activeSessionId={activeAssistantSessionId}
                 key={`assistant-${assistantSessionTarget.revision}`}
-                onNewSession={createAssistantSession}
-                onOpenSession={openAssistantSession}
                 onSessionReady={handleAssistantSessionReady}
-                refreshKey={assistantSessionsRevision}
                 sessionId={assistantSessionTarget.sessionId}
                 workspaceRoot={workspaceRoot}
               />
@@ -534,7 +557,7 @@ function App() {
             ) : null}
           </main>
         </div>
-      </div>
+      </SidebarProvider>
 
       <Sheet open={assistantOpen} onOpenChange={setAssistantOpen}>
         <SheetContent className="w-[min(420px,100vw)] gap-0 p-0 sm:max-w-[420px]">
@@ -811,30 +834,16 @@ function isReadyWorkspaceApp(appId: WorkspaceApp["id"]): appId is WorkspaceAppId
 }
 
 function AiWorkspace({
-  activeSessionId,
-  onNewSession,
-  onOpenSession,
   onSessionReady,
-  refreshKey,
   sessionId,
   workspaceRoot,
 }: {
-  activeSessionId: string | null
-  onNewSession: () => void
-  onOpenSession: (sessionId: string) => void
   onSessionReady: (sessionId: string) => void
-  refreshKey: number
   sessionId: string | null
   workspaceRoot: string | null
 }) {
   return (
     <div className="flex min-h-0 flex-1 bg-background">
-      <AssistantSessionSidebar
-        activeSessionId={activeSessionId}
-        onNewSession={onNewSession}
-        onOpenSession={onOpenSession}
-        refreshKey={refreshKey}
-      />
       <div className="flex min-w-0 flex-1 flex-col">
         <ChatPanel
           initialSessionId={sessionId}
@@ -846,13 +855,21 @@ function AiWorkspace({
   )
 }
 
-function AssistantSessionSidebar({
+function WorkspaceSidebar({
+  activeModule,
   activeSessionId,
+  collapsed,
+  onCollapsedChange,
+  onModuleChange,
   onNewSession,
   onOpenSession,
   refreshKey,
 }: {
+  activeModule: WorkspaceModule
   activeSessionId: string | null
+  collapsed: boolean
+  onCollapsedChange: (collapsed: boolean) => void
+  onModuleChange: (module: WorkspaceModule) => void
   onNewSession: () => void
   onOpenSession: (sessionId: string) => void
   refreshKey: number
@@ -861,6 +878,8 @@ function AssistantSessionSidebar({
   const [query, setQuery] = useState("")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [sessionsOpen, setSessionsOpen] = useState(true)
 
   const loadSessions = useCallback(async () => {
     setLoading(true)
@@ -890,77 +909,179 @@ function AssistantSessionSidebar({
   }, [query, sessions])
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-muted/20">
-      <div className="flex h-14 items-center gap-2 border-b border-border bg-background px-3">
-        <div className="min-w-0 flex-1 text-sm font-semibold">会话</div>
-        <Button
-          aria-label="刷新会话"
-          disabled={loading}
-          onClick={() => void loadSessions()}
-          size="icon-sm"
-          type="button"
-          variant="ghost"
-        >
-          <RefreshCw className={cn("size-4", loading && "animate-spin")} />
-        </Button>
-        <Button aria-label="新建会话" onClick={onNewSession} size="icon-sm" type="button">
-          <Plus className="size-4" />
-        </Button>
-      </div>
-
-      <div className="border-b border-border/70 p-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            className="h-8 pl-8 text-xs"
-            onChange={event => setQuery(event.target.value)}
-            placeholder="搜索会话"
-            value={query}
-          />
+    <Sidebar
+      className={cn(
+        "shrink-0 overflow-hidden border-r border-sidebar-border bg-[#f7f7f7] transition-[width] duration-200 ease-out",
+        collapsed ? "w-16" : "w-64"
+      )}
+      collapsible="none"
+    >
+      <SidebarHeader className={cn("gap-3 px-2 pb-2 pt-3", collapsed && "items-center")}>
+        <div className={cn("flex min-h-10 items-start gap-2", collapsed ? "justify-center" : "justify-between")}>
+          {!collapsed ? (
+            <div className="min-w-0 px-1 pt-0.5">
+              <div className="text-[13px] font-normal tracking-[-0.01em] text-sidebar-foreground">Veyra</div>
+              <div className="mt-0.5 text-[9px] font-normal tracking-wide text-muted-foreground/60">v0.1.0</div>
+            </div>
+          ) : null}
+          <div className={cn("flex items-center gap-0.5", collapsed && "flex-col")}>
+            <Button
+              aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
+              className="size-8 rounded-lg text-muted-foreground hover:bg-black/5 hover:text-foreground"
+              onClick={() => onCollapsedChange(!collapsed)}
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+            </Button>
+            {!collapsed ? (
+              <>
+                <Button
+                  aria-label="搜索任务"
+                  aria-pressed={searchOpen}
+                  className="size-8 rounded-lg text-muted-foreground hover:bg-black/5 hover:text-foreground"
+                  onClick={() => setSearchOpen(current => !current)}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Search className="size-4" />
+                </Button>
+                <Button
+                  aria-label="刷新任务"
+                  className="size-8 rounded-lg text-muted-foreground hover:bg-black/5 hover:text-foreground"
+                  disabled={loading}
+                  onClick={() => void loadSessions()}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+                </Button>
+              </>
+            ) : null}
+          </div>
         </div>
-      </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-2">
-        {error ? (
-          <button
-            className="w-full rounded-lg border border-destructive/30 p-3 text-left text-xs text-destructive"
-            onClick={() => void loadSessions()}
-            type="button"
-          >
-            {error} 点击重试
-          </button>
-        ) : loading && sessions.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" />
-            加载中…
+        {!collapsed && searchOpen ? (
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              autoFocus
+              className="h-8 rounded-lg border-black/5 bg-white/80 pl-8 text-xs shadow-none"
+              onChange={event => setQuery(event.target.value)}
+              placeholder="搜索任务"
+              value={query}
+            />
           </div>
-        ) : visibleSessions.length === 0 ? (
-          <div className="py-8 text-center text-xs text-muted-foreground">
-            {query ? "没有匹配的会话" : "暂无历史会话"}
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {visibleSessions.map(session => (
+        ) : null}
+      </SidebarHeader>
+
+      <SidebarContent className="gap-0 px-2 pb-3">
+        <SidebarGroup className="p-0">
+          <SidebarGroupContent>
+            <SidebarMenu className="gap-0.5">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  aria-label="新建任务"
+                  className={cn(
+                    "h-9 rounded-lg px-2 text-[13px] font-normal hover:bg-black/5",
+                    collapsed && "justify-center"
+                  )}
+                  onClick={onNewSession}
+                  tooltip="新建任务"
+                >
+                  <MessageCirclePlus className="size-[17px]" />
+                  {!collapsed ? <span>新建任务</span> : null}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              {MODULES.map(item => {
+                const Icon = item.icon
+                return (
+                  <SidebarMenuItem key={item.id}>
+                    <SidebarMenuButton
+                      aria-label={item.label}
+                      className={cn(
+                        "h-8 rounded-lg px-2 text-[13px] font-normal hover:bg-black/5 data-[active=true]:bg-black/[0.055] data-[active=true]:text-foreground",
+                        collapsed && "justify-center"
+                      )}
+                      isActive={activeModule === item.id}
+                      onClick={() => onModuleChange(item.id)}
+                      tooltip={item.label}
+                    >
+                      <Icon className="size-4" />
+                      {!collapsed ? <span>{item.label}</span> : null}
+                    </SidebarMenuButton>
+                    {!collapsed && item.description ? (
+                      <SidebarMenuBadge className="right-2 text-[11px] font-normal text-muted-foreground/55">
+                        {item.description}
+                      </SidebarMenuBadge>
+                    ) : null}
+                  </SidebarMenuItem>
+                )
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        {!collapsed ? (
+          <SidebarGroup className="mt-4 min-h-0 p-0">
+            <SidebarGroupLabel className="h-8 px-0 text-[12px] font-normal text-muted-foreground/65">
               <button
-                className={cn(
-                  "w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent",
-                  activeSessionId === session.sessionId && "bg-accent text-accent-foreground"
-                )}
-                key={session.sessionId}
-                onClick={() => onOpenSession(session.sessionId)}
+                className="flex h-full w-full items-center gap-1 rounded-md px-2 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                onClick={() => setSessionsOpen(current => !current)}
                 type="button"
               >
-                <div className="truncate text-xs font-medium">{session.title || session.sessionId}</div>
-                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                  <span className="truncate font-mono">{session.sessionId.slice(0, 8)}</span>
-                  <span className="shrink-0">{formatSessionTime(session.updatedAt)}</span>
-                </div>
+                <span>任务 ({sessions.length})</span>
+                {sessionsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </aside>
+            </SidebarGroupLabel>
+
+            {sessionsOpen ? (
+              <SidebarGroupContent>
+                {error ? (
+                  <button
+                    className="w-full rounded-lg px-2 py-3 text-left text-xs text-destructive hover:bg-destructive/5"
+                    onClick={() => void loadSessions()}
+                    type="button"
+                  >
+                    {error} 点击重试
+                  </button>
+                ) : loading && sessions.length === 0 ? (
+                  <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
+                    <Loader2 className="size-3.5 animate-spin" />
+                    加载中…
+                  </div>
+                ) : visibleSessions.length === 0 ? (
+                  <div className="px-2 py-3 text-xs text-muted-foreground">
+                    {query ? "没有匹配的任务" : "新建一个任务开始工作"}
+                  </div>
+                ) : (
+                  <SidebarMenu className="gap-0.5">
+                    {visibleSessions.map(session => (
+                      <SidebarMenuItem key={session.sessionId}>
+                        <SidebarMenuButton
+                          className="h-8 rounded-lg py-0 pl-2 pr-[4.75rem] text-xs font-normal hover:bg-black/5 data-[active=true]:bg-black/[0.055]"
+                          isActive={activeSessionId === session.sessionId}
+                          onClick={() => onOpenSession(session.sessionId)}
+                        >
+                          <span className="truncate">{session.title || session.sessionId}</span>
+                        </SidebarMenuButton>
+                        <SidebarMenuBadge className="right-2 max-w-16 truncate text-[10px] font-normal text-muted-foreground/55">
+                          {formatRelativeSessionTime(session.updatedAt)}
+                        </SidebarMenuBadge>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                )}
+              </SidebarGroupContent>
+            ) : null}
+          </SidebarGroup>
+        ) : null}
+      </SidebarContent>
+    </Sidebar>
   )
 }
 
@@ -982,6 +1103,28 @@ function formatSessionTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date)
+}
+
+function formatRelativeSessionTime(value: string) {
+  const timestamp = new Date(value).getTime()
+  if (Number.isNaN(timestamp)) return value
+
+  const elapsedMs = Date.now() - timestamp
+  if (elapsedMs < 60_000) return "刚刚"
+
+  const minutes = Math.floor(elapsedMs / 60_000)
+  if (minutes < 60) return `${minutes}分钟前`
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}小时前`
+
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}天前`
+
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}个月前`
+
+  return `${Math.floor(months / 12)}年前`
 }
 
 function HistoryWorkspace({

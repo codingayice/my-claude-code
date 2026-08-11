@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, CheckCircle2, CornerUpRight, Copy, FileText, FolderOpen, ShieldCheck, XCircle } from 'lucide-react'
+import { Check, CheckCircle2, CornerUpRight, Copy, Ellipsis, FileText, FolderOpen, ListRestart, Pencil, ShieldCheck, Trash2, XCircle } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai/agent'
@@ -63,6 +63,12 @@ import {
   DialogContent,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { PlaceholdersAndVanishInput } from '@/components/ui/placeholders-and-vanish-input'
 import {
   Select,
@@ -1694,6 +1700,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     threshold: number
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [cancellingInputs, setCancellingInputs] = useState<string[]>([])
   const [resolvingApprovals, setResolvingApprovals] = useState<string[]>([])
   const [detailSubagent, setDetailSubagent] = useState<SubagentEntry | null>(null)
   const [workingDir, setWorkingDir] = useState('')
@@ -1702,6 +1709,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const tokenBufferRef = useRef(new Map<string, { text: string; timestampMs: number }>())
   const tokenFlushTimerRef = useRef<number | null>(null)
   const copyResetTimerRef = useRef<number | null>(null)
+  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => {
     if (typeof initialInput === 'string') {
@@ -1765,6 +1773,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       'input.queued',
       'input.mode.changed',
       'input.applied',
+      'input.cancelled',
       'input.failed',
       'task.started',
       'task.step.started',
@@ -1841,9 +1850,10 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         return
       }
 
-      if (data.type === 'input.applied' || data.type === 'input.failed') {
+      if (data.type === 'input.applied' || data.type === 'input.cancelled' || data.type === 'input.failed') {
         const id = typeof payload.messageId === 'string' ? payload.messageId : ''
         setPendingInputs(current => current.filter(item => item.id !== id))
+        setCancellingInputs(current => current.filter(item => item !== id))
         if (data.type === 'input.failed') {
           setError('追随消息未能启动，请重新发送。')
         }
@@ -2578,6 +2588,28 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     }
   }, [sessionId])
 
+  const cancelPendingInput = useCallback(async (messageId: string) => {
+    if (!sessionId) return false
+    setCancellingInputs(current => current.includes(messageId) ? current : [...current, messageId])
+    try {
+      await agentApi.cancelFollowup(sessionId, messageId)
+      setPendingInputs(current => current.filter(item => item.id !== messageId))
+      return true
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '这条消息已经无法取消。')
+      return false
+    } finally {
+      setCancellingInputs(current => current.filter(item => item !== messageId))
+    }
+  }, [sessionId])
+
+  const editPendingInput = useCallback(async (input: PendingInputView) => {
+    const removed = await cancelPendingInput(input.id)
+    if (!removed) return
+    setDraft(input.text)
+    window.requestAnimationFrame(() => promptTextareaRef.current?.focus())
+  }, [cancelPendingInput])
+
   const resolveApproval = useCallback(async (approvalId: string, decision: ApprovalDecision) => {
     if (!sessionId) return
 
@@ -2753,30 +2785,53 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
           ) : null}
 
           {pendingInputs.length > 0 ? (
-            <div className="mb-3 space-y-2" aria-label="待处理消息">
+            <div className="relative z-10 -mb-2 space-y-2 px-1" aria-label="待处理消息">
               {pendingInputs.map(input => (
                 <div
-                  className="flex items-center gap-3 rounded-xl border border-border/80 bg-muted/45 px-3 py-2 shadow-sm"
+                  className="flex min-h-11 items-center gap-2 rounded-[18px] border border-zinc-200/90 bg-white px-3.5 py-2 text-zinc-700 shadow-[0_4px_18px_rgba(0,0,0,0.035)]"
                   key={input.id}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-0.5 text-[11px] font-medium text-muted-foreground">
-                      {input.mode === 'steer' ? '将在下一轮引导当前任务' : '将在当前任务结束后发送'}
-                    </div>
-                    <div className="truncate text-sm text-foreground" title={input.text}>{input.text}</div>
-                  </div>
+                  <ListRestart className="size-3.5 shrink-0 text-zinc-400" />
+                  <div className="min-w-0 flex-1 truncate text-[13px] font-normal" title={input.text}>{input.text}</div>
                   {input.steerable ? (
                     <Button
+                      aria-label={input.mode === 'steer' ? '已调整方向' : '调整方向'}
+                      className="h-7 shrink-0 gap-1 rounded-lg px-2 text-xs font-normal text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-45"
                       disabled={input.mode === 'steer'}
                       onClick={() => void steerPendingInput(input.id)}
                       size="sm"
                       type="button"
-                      variant={input.mode === 'steer' ? 'secondary' : 'outline'}
+                      variant="ghost"
                     >
-                      <CornerUpRight />
-                      {input.mode === 'steer' ? '已引导' : '引导'}
+                      <CornerUpRight className="size-3.5" />
+                      调整方向
                     </Button>
                   ) : null}
+                  <Button
+                    aria-label="删除待处理消息"
+                    className="size-7 shrink-0 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+                    disabled={cancellingInputs.includes(input.id)}
+                    onClick={() => void cancelPendingInput(input.id)}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      aria-label="更多待处理消息操作"
+                      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-zinc-400 outline-none hover:bg-zinc-100 hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-ring/40"
+                    >
+                      <Ellipsis className="size-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-28">
+                      <DropdownMenuItem onSelect={() => void editPendingInput(input)}>
+                        <Pencil className="size-3.5" />
+                        编辑消息
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               ))}
             </div>
@@ -2790,6 +2845,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
                 disabled={!sessionId}
                 onChange={event => setDraft(event.currentTarget.value)}
                 placeholder={sessionId ? '输入消息并发送给助手' : '正在连接本地智能体...'}
+                ref={promptTextareaRef}
                 value={draft}
               />
             </PromptInputBody>

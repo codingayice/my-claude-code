@@ -173,6 +173,13 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
         { method: "POST" }
       ),
 
+    cancelFollowup: (sessionId: string, messageId: string) =>
+      requestJson<{ ok: boolean }>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/followups/${encodePathSegment(messageId)}`,
+        { method: "DELETE" }
+      ),
+
     decideApproval: (
       sessionId: string,
       approvalId: string,

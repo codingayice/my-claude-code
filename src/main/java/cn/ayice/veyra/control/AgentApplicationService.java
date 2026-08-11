@@ -128,6 +128,11 @@ public class AgentApplicationService {
         return runtimeHost.steerFollowup(sessionId, messageId);
     }
 
+    /** 取消尚未被消费的追随或引导输入。 */
+    public boolean cancelFollowup(String sessionId, String messageId) {
+        return runtimeHost.cancelFollowup(sessionId, messageId);
+    }
+
     /**
      * 返回与查询文本匹配的斜杠命令补全选项。
      */
