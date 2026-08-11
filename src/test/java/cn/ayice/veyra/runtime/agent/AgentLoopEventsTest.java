@@ -33,6 +33,20 @@ class AgentLoopEventsTest {
     }
 
     @Test
+    void steeringUserMessageCarriesTurnBoundaryMetadata() {
+        RecordingSink sink = new RecordingSink();
+        AgentLoopEvents events = new AgentLoopEvents(sink);
+
+        events.steeringUserMessage("改为只分析", "pending-1");
+
+        Event event = sink.events.get(0);
+        assertEquals("user.message", event.type);
+        assertEquals("改为只分析", event.payload.get("text"));
+        assertEquals("pending-1", event.payload.get("messageId"));
+        assertEquals("steer", event.payload.get("mode"));
+    }
+
+    @Test
     void contextWarningCarriesBackendTokenStateAndThresholdsOnly() {
         RecordingSink sink = new RecordingSink();
         AgentLoopEvents events = new AgentLoopEvents(sink);

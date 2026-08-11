@@ -34,6 +34,23 @@ class AgentLoopEvents {
     }
 
     /**
+     * 发布一条在当前 Run 轮次边界生效的引导消息。
+     * messageId 和 mode 让前端能在同一个 runId 内建立新的执行区块。
+     */
+    void steeringUserMessage(String text, String messageId) {
+        emit("user.message",
+                "text", text,
+                "messageId", messageId,
+                "mode", "steer"
+        );
+    }
+
+    /** 发布待处理输入已经进入模型历史的事件。 */
+    void pendingInputApplied(String messageId, String mode) {
+        emit("input.applied", "messageId", messageId, "mode", mode);
+    }
+
+    /**
      * 发布助手正文增量 token 事件。
      */
     void assistantToken(String token) {

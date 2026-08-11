@@ -14,6 +14,7 @@ import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
 import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
+import cn.ayice.veyra.runtime.PendingInputQueue;
 import cn.ayice.veyra.runtime.model.ModelCallExecutor;
 import cn.ayice.veyra.llm.AIService;
 import cn.ayice.veyra.tool.ToolCatalog;
@@ -64,6 +65,7 @@ public class AgentLoop {
     private final MemoryExtractionCoordinator memoryExtractionCoordinator;
     private final long modelCallTimeoutMs;
     private final JournalMessageRecorder messageRecorder;
+    private final PendingInputQueue pendingInputs = new PendingInputQueue();
 
     private PermissionContext permissionContext;
     private List<WorkingMessage> history;
@@ -174,6 +176,16 @@ public class AgentLoop {
         boolean mainAgentWroteMemory = false;
 
         while (true) {
+            if (!state.isTerminal()) {
+                List<PendingInputQueue.Message> steeringMessages = pendingInputs.drainSteers();
+                for (PendingInputQueue.Message steering : steeringMessages) {
+                    UserMessage steeringMessage = UserMessage.from(steering.text());
+                    state = state.appendOriginal(steeringMessage).markStable();
+                    messageRecorder.record(steeringMessage);
+                    events.pendingInputApplied(steering.id(), "steer");
+                    events.steeringUserMessage(steering.text(), steering.id());
+                }
+            }
             if (state.isTerminal()) {
                 history = state.messages();
                 nextSequence = state.nextSequence();
@@ -397,6 +409,11 @@ public class AgentLoop {
      */
     public List<ChatMessage> getHistory() {
         return WorkingMessage.unwrap(history);
+    }
+
+    /** 返回当前 Session 与主循环共享的运行中输入队列。 */
+    public PendingInputQueue pendingInputs() {
+        return pendingInputs;
     }
 
     /**

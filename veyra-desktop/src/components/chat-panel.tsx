@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, CheckCircle2, Copy, FileText, FolderOpen, ShieldCheck, XCircle } from 'lucide-react'
+import { Check, CheckCircle2, CornerUpRight, Copy, FileText, FolderOpen, ShieldCheck, XCircle } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai/agent'
@@ -57,6 +57,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -224,6 +225,13 @@ type ChatEntry = {
   streaming?: boolean
   final?: boolean
   segments?: AssistantSegment[]
+}
+
+type PendingInputView = {
+  id: string
+  text: string
+  mode: 'followup' | 'steer'
+  steerable: boolean
 }
 
 type AgentEvent = AgentStableEvent
@@ -1671,6 +1679,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const [panelState, setPanelState] = useState<PanelState>('connecting')
   const [draft, setDraft] = useState(initialInput ?? '')
   const [messages, setMessages] = useState<ChatEntry[]>([])
+  const [pendingInputs, setPendingInputs] = useState<PendingInputView[]>([])
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [contextOpen, setContextOpen] = useState(false)
   const [llmContextTurns, setLlmContextTurns] = useState<LlmContextTurn[]>([])
@@ -1753,6 +1762,10 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       'permission.resolved',
       'permission.interrupted',
       'todo.updated',
+      'input.queued',
+      'input.mode.changed',
+      'input.applied',
+      'input.failed',
       'task.started',
       'task.step.started',
       'task.assistant.message.completed',
@@ -1805,16 +1818,64 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         return
       }
 
+      if (data.type === 'input.queued') {
+        const id = typeof payload.messageId === 'string' ? payload.messageId : ''
+        const text = typeof payload.text === 'string' ? payload.text : ''
+        if (!id || !text) return
+        setPendingInputs(current => current.some(item => item.id === id)
+          ? current
+          : [...current, {
+              id,
+              text,
+              mode: 'followup',
+              steerable: payload.steerable === true,
+            }])
+        return
+      }
+
+      if (data.type === 'input.mode.changed') {
+        const id = typeof payload.messageId === 'string' ? payload.messageId : ''
+        setPendingInputs(current => current.map(item => item.id === id
+          ? { ...item, mode: 'steer' }
+          : item))
+        return
+      }
+
+      if (data.type === 'input.applied' || data.type === 'input.failed') {
+        const id = typeof payload.messageId === 'string' ? payload.messageId : ''
+        setPendingInputs(current => current.filter(item => item.id !== id))
+        if (data.type === 'input.failed') {
+          setError('追随消息未能启动，请重新发送。')
+        }
+        return
+      }
+
       if (data.type === 'user.message') {
         const text = typeof payload.text === 'string' ? payload.text : ''
         if (!text) return
         setMessages(current => {
-          const id = `event-user-${data.seq}`
+          const messageId = typeof payload.messageId === 'string' ? payload.messageId : ''
+          const isSteer = payload.mode === 'steer' && Boolean(messageId)
+          const id = messageId ? `pending-user-${messageId}` : `event-user-${data.seq}`
           const last = current[current.length - 1]
-          return current.some(entry => entry.id === id)
+          if (current.some(entry => entry.id === id)
             || (last?.role === 'user' && last.content === text)
-            ? current
-            : [...current, { id, role: 'user', content: text, final: true }]
+          ) {
+            return current
+          }
+
+          const next: ChatEntry[] = [...current, { id, role: 'user', content: text, final: true }]
+          if (isSteer) {
+            next.push({
+              id: `steer-assistant-${messageId}`,
+              role: 'assistant',
+              runId,
+              streaming: true,
+              final: false,
+              segments: [],
+            })
+          }
+          return next
         })
         return
       }
@@ -2459,8 +2520,24 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     const nextText = text.trim()
     if (!nextText) return
 
-    setPanelState('running')
     setError(null)
+    if (panelState === 'running') {
+      const queued = await agentApi.createFollowup(sessionId, nextText, runMode)
+      if (!queued.accepted) {
+        throw new Error('消息未能加入追随队列。')
+      }
+      setPendingInputs(current => current.some(item => item.id === queued.messageId)
+        ? current
+        : [...current, {
+            id: queued.messageId,
+            text: nextText,
+            mode: 'followup',
+            steerable: queued.steerable,
+          }])
+      return
+    }
+
+    setPanelState('running')
     setMessages(current => [
       ...current,
       {
@@ -2471,7 +2548,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     ])
 
     await agentApi.createRun(sessionId, nextText, runMode)
-  }, [runMode, sessionId])
+  }, [panelState, runMode, sessionId])
 
   const handleSubmit = useCallback(async ({ text }: { text: string }) => {
     const nextText = text.trim()
@@ -2488,6 +2565,18 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       throw cause
     }
   }, [submitPrompt])
+
+  const steerPendingInput = useCallback(async (messageId: string) => {
+    if (!sessionId) return
+    try {
+      await agentApi.steerFollowup(sessionId, messageId)
+      setPendingInputs(current => current.map(item => item.id === messageId
+        ? { ...item, mode: 'steer' }
+        : item))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '这条消息已经无法切换为引导。')
+    }
+  }, [sessionId])
 
   const resolveApproval = useCallback(async (approvalId: string, decision: ApprovalDecision) => {
     if (!sessionId) return
@@ -2660,6 +2749,36 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
           {currentTodo ? (
             <div className="mb-3 flex justify-center">
               <TodoQueuePanel segment={currentTodo} />
+            </div>
+          ) : null}
+
+          {pendingInputs.length > 0 ? (
+            <div className="mb-3 space-y-2" aria-label="待处理消息">
+              {pendingInputs.map(input => (
+                <div
+                  className="flex items-center gap-3 rounded-xl border border-border/80 bg-muted/45 px-3 py-2 shadow-sm"
+                  key={input.id}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-0.5 text-[11px] font-medium text-muted-foreground">
+                      {input.mode === 'steer' ? '将在下一轮引导当前任务' : '将在当前任务结束后发送'}
+                    </div>
+                    <div className="truncate text-sm text-foreground" title={input.text}>{input.text}</div>
+                  </div>
+                  {input.steerable ? (
+                    <Button
+                      disabled={input.mode === 'steer'}
+                      onClick={() => void steerPendingInput(input.id)}
+                      size="sm"
+                      type="button"
+                      variant={input.mode === 'steer' ? 'secondary' : 'outline'}
+                    >
+                      <CornerUpRight />
+                      {input.mode === 'steer' ? '已引导' : '引导'}
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
             </div>
           ) : null}
 

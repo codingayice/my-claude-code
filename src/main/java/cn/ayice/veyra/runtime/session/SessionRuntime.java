@@ -8,6 +8,8 @@ import cn.ayice.veyra.interaction.command.SlashCommandDispatcher;
 import cn.ayice.veyra.interaction.command.SlashCommandOption;
 import cn.ayice.veyra.interaction.command.SlashCommandResult;
 import cn.ayice.veyra.runtime.RunTarget;
+import cn.ayice.veyra.runtime.PendingInputQueue;
+import cn.ayice.veyra.runtime.RunMode;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionMode;
@@ -38,6 +40,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     private final SlashCommandDispatcher slashCommands;
     private final SessionRunQueue runQueue;
     private final SessionJournalRecorder journalRecorder;
+    private final PendingInputQueue pendingInputs;
     private volatile String runMode;
     private volatile String lastRunStatus;
 
@@ -83,6 +86,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         this.slashCommands = slashCommands;
         this.runQueue = new SessionRunQueue(executor);
         this.journalRecorder = journalRecorder;
+        this.pendingInputs = agentLoop.pendingInputs();
         this.runMode = runMode == null || runMode.isBlank() ? "chat" : runMode;
         this.lastRunStatus = lastRunStatus == null ? "idle" : lastRunStatus;
     }
@@ -106,6 +110,21 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
      */
     public CompletableFuture<Void> enqueue(Runnable run) {
         return runQueue.submit(run);
+    }
+
+    /** 将运行期间的新输入加入默认追随队列。 */
+    public PendingInputQueue.Message addFollowup(String text, RunMode mode) {
+        return pendingInputs.addFollowup(text, mode);
+    }
+
+    /** 尝试把尚未消费的追随输入切换为引导。 */
+    public boolean steerPendingInput(String messageId) {
+        return pendingInputs.steer(messageId);
+    }
+
+    /** 在当前 Run 之后领取指定待处理输入。 */
+    public PendingInputQueue.Message takePendingInputForNextRun(String messageId) {
+        return pendingInputs.takeForNextRun(messageId);
     }
 
     /**

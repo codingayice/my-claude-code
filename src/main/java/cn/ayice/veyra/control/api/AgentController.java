@@ -9,6 +9,8 @@ import cn.ayice.veyra.control.dto.command.SlashCommandListResponse;
 import cn.ayice.veyra.control.dto.common.ApiResponse;
 import cn.ayice.veyra.control.dto.run.CreateRunRequest;
 import cn.ayice.veyra.control.dto.run.CreateRunResponse;
+import cn.ayice.veyra.control.dto.run.CreateFollowupRequest;
+import cn.ayice.veyra.control.dto.run.CreateFollowupResponse;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
@@ -114,6 +116,28 @@ public class AgentController {
     ) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(ApiResponse.success(application.createRun(sessionId, request.input(), request.mode())));
+    }
+
+    /** 将运行期间的新输入加入默认追随队列。 */
+    @PostMapping("/sessions/{sessionId}/followups")
+    public ResponseEntity<ApiResponse<CreateFollowupResponse>> createFollowup(
+            @PathVariable("sessionId") String sessionId,
+            @RequestBody CreateFollowupRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.success(application.createFollowup(sessionId, request.input(), request.mode())));
+    }
+
+    /** 把尚未消费的 Agent Follow-up 切换为引导。 */
+    @PostMapping("/sessions/{sessionId}/followups/{messageId}/steer")
+    public ApiResponse<Map<String, Object>> steerFollowup(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("messageId") String messageId
+    ) {
+        if (!application.steerFollowup(sessionId, messageId)) {
+            throw new AgentApiException(HttpStatus.CONFLICT, "followup is no longer steerable");
+        }
+        return ApiResponse.success(Map.of("ok", true));
     }
 
     /**

@@ -116,6 +116,59 @@ public class RuntimeHost {
     }
 
     /**
+     * 将运行期间的新输入默认排到当前 Run 之后；若之后被切换为引导，排队任务会自动跳过。
+     */
+    public PendingInputSubmission submitFollowup(String sessionId, String input, String mode) {
+        SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
+        String nextInput = input == null ? "" : input.trim();
+        if (nextInput.isEmpty()) {
+            return PendingInputSubmission.rejected();
+        }
+
+        PendingInputQueue.Message pending = session.addFollowup(nextInput, RunMode.from(mode));
+        session.emit("input.queued", java.util.Map.of(
+                "messageId", pending.id(),
+                "text", pending.text(),
+                "mode", "followup",
+                "steerable", pending.mode() == RunMode.AGENT
+        ));
+        session.enqueue(() -> {
+            PendingInputQueue.Message claimed = session.takePendingInputForNextRun(pending.id());
+            if (claimed == null) {
+                return;
+            }
+            String runId = UUID.randomUUID().toString();
+            RunCommand command = new RunCommand(runId, sessionId, claimed.text(), claimed.mode());
+            if (!session.acceptRun(runId, claimed.text(), claimed.mode().name().toLowerCase())) {
+                session.emit("input.failed", java.util.Map.of(
+                        "messageId", claimed.id(),
+                        "reason", "session_still_running"
+                ));
+                return;
+            }
+            session.emit("input.applied", java.util.Map.of(
+                    "messageId", claimed.id(),
+                    "mode", "followup"
+            ));
+            runs.execute(session, command);
+        });
+        return PendingInputSubmission.accepted(pending);
+    }
+
+    /** 将一条尚未消费的 Agent Follow-up 切换为当前 Run 的引导输入。 */
+    public boolean steerFollowup(String sessionId, String messageId) {
+        SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
+        boolean moved = session.steerPendingInput(messageId);
+        if (moved) {
+            session.emit("input.mode.changed", java.util.Map.of(
+                    "messageId", messageId,
+                    "mode", "steer"
+            ));
+        }
+        return moved;
+    }
+
+    /**
      * 返回指定会话尚未处理的工具审批请求。
      */
     public List<PendingApprovalState> pendingApprovals(String sessionId) {

@@ -163,3 +163,31 @@ test("surfaces unified API failures", async () => {
 
   await assert.rejects(client.health(), /系统执行失败/)
 })
+
+test("queues and steers followup inputs", async () => {
+  const requests: RecordedRequest[] = []
+  const responses = [
+    apiResponse({ messageId: "message/1", accepted: true, steerable: true }, 202),
+    apiResponse({ ok: true }),
+  ]
+  const client = createAgentApiClient(async (input, init) => {
+    requests.push({ url: String(input), init })
+    const response = responses.shift()
+    assert.ok(response)
+    return response
+  })
+
+  assert.deepEqual(await client.createFollowup("session/1", "调整方向", "agent"), {
+    messageId: "message/1",
+    accepted: true,
+    steerable: true,
+  })
+  await client.steerFollowup("session/1", "message/1")
+
+  assert.equal(requests[0].url, `${AGENT_API_BASE}/sessions/session%2F1/followups`)
+  assert.equal(requests[0].init?.body, JSON.stringify({ input: "调整方向", mode: "agent" }))
+  assert.equal(
+    requests[1].url,
+    `${AGENT_API_BASE}/sessions/session%2F1/followups/message%2F1/steer`
+  )
+})

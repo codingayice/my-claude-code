@@ -4,6 +4,8 @@ import cn.ayice.veyra.compaction.CompactionConfig;
 import cn.ayice.veyra.config.AppConfig;
 import cn.ayice.veyra.context.ContextService;
 import cn.ayice.veyra.llm.AIService;
+import cn.ayice.veyra.runtime.PendingInputQueue;
+import cn.ayice.veyra.runtime.RunMode;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionMode;
@@ -108,6 +110,31 @@ class AgentLoopRecoveryTest {
         assertEquals(2, recorder.messages.size());
         assertEquals("新问题", ((UserMessage) recorder.messages.get(0)).singleText());
         assertEquals("ok", ((AiMessage) recorder.messages.get(1)).text());
+    }
+
+    @Test
+    void injectsSteeringInputBeforeTheNextModelRequest() {
+        RecordingSink sink = new RecordingSink();
+        RecordingAIService ai = new RecordingAIService();
+        RecordingTranscriptRecorder recorder = new RecordingTranscriptRecorder();
+        AgentLoop loop = createLoop(ai, sink, tempDir, 120_000, List.of(), recorder);
+        PendingInputQueue.Message pending = loop.pendingInputs().addFollowup("改为只分析，不修改", RunMode.AGENT);
+        assertTrue(loop.pendingInputs().steer(pending.id()));
+
+        String result = loop.process("检查这个问题");
+
+        assertEquals("ok", result);
+        List<UserMessage> userMessages = ai.lastMessages.stream()
+                .filter(UserMessage.class::isInstance)
+                .map(UserMessage.class::cast)
+                .toList();
+        assertEquals(List.of("检查这个问题", "改为只分析，不修改"),
+                userMessages.stream().map(UserMessage::singleText).toList());
+        assertEquals(1, sink.eventsOfType("input.applied").size());
+        Event steeringEvent = sink.eventsOfType("user.message").get(1);
+        assertEquals(pending.id(), steeringEvent.payload().get("messageId"));
+        assertEquals("steer", steeringEvent.payload().get("mode"));
+        assertEquals(3, recorder.messages.size());
     }
 
     private static AgentLoop createLoop(AIService ai, AgentEventSink sink, Path tempDir) {

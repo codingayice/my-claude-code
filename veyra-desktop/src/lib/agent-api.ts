@@ -45,6 +45,12 @@ export type AgentRunResponse = {
   accepted: boolean
 }
 
+export type AgentFollowupResponse = {
+  messageId: string
+  accepted: boolean
+  steerable: boolean
+}
+
 type ApiResponse<T> = {
   success: boolean
   code: string
@@ -148,6 +154,23 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
           method: "POST",
           body: JSON.stringify({ input, mode }),
         }
+      ),
+
+    createFollowup: (sessionId: string, input: string, mode: AgentRunMode) =>
+      requestJson<AgentFollowupResponse>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/followups`,
+        {
+          method: "POST",
+          body: JSON.stringify({ input, mode }),
+        }
+      ),
+
+    steerFollowup: (sessionId: string, messageId: string) =>
+      requestJson<{ ok: boolean }>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/followups/${encodePathSegment(messageId)}/steer`,
+        { method: "POST" }
       ),
 
     decideApproval: (

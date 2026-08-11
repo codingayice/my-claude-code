@@ -6,6 +6,7 @@ import cn.ayice.veyra.control.dto.command.ExecuteSlashCommandResponse;
 import cn.ayice.veyra.control.dto.command.SlashCommandListResponse;
 import cn.ayice.veyra.control.dto.command.SlashCommandOptionResponse;
 import cn.ayice.veyra.control.dto.run.CreateRunResponse;
+import cn.ayice.veyra.control.dto.run.CreateFollowupResponse;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionRecordResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
@@ -110,6 +111,21 @@ public class AgentApplicationService {
     public CreateRunResponse createRun(String sessionId, String input, String mode) {
         RunSubmission submission = runtimeHost.submitRun(sessionId, input, mode);
         return new CreateRunResponse(submission.runId(), submission.accepted());
+    }
+
+    /** 将运行期间的新输入加入默认追随队列。 */
+    public CreateFollowupResponse createFollowup(String sessionId, String input, String mode) {
+        var submission = runtimeHost.submitFollowup(sessionId, input, mode);
+        return new CreateFollowupResponse(
+                submission.messageId(),
+                submission.accepted(),
+                submission.steerable()
+        );
+    }
+
+    /** 将尚未消费的追随输入切换为引导。 */
+    public boolean steerFollowup(String sessionId, String messageId) {
+        return runtimeHost.steerFollowup(sessionId, messageId);
     }
 
     /**
