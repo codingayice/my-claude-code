@@ -1,5 +1,7 @@
 # Veyra Event Stream、Run Snapshot 与 Session Index 持久化恢复设计
 
+> 后续修订：`veyra-unified-agent-state-machine-design.md` 将在线执行和重建统一到同一个 `AgentState + AgentReducer`，并定义新的原子 Batch Record、ToolBatch 和事件协议。本文保留 Session Event Stream、Run 树和 Index 的基础背景，执行状态、Snapshot 内容和冲突事件语义以后续设计为准。
+
 ## 1. 文档状态
 
 - 日期：2026-08-11

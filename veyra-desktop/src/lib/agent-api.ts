@@ -83,6 +83,7 @@ export type AgentTranscriptEntry = {
 
 export type AgentStableEvent = {
   seq: number
+  revision: number
   sessionId: string
   runId?: string | null
   type: string
@@ -121,6 +122,29 @@ export type AgentFetch = (
   input: RequestInfo | URL,
   init?: RequestInit
 ) => Promise<Response>
+
+export class AgentApiError extends Error {
+  readonly code: string
+  readonly status: number
+
+  constructor(
+    message: string,
+    code: string,
+    status: number,
+  ) {
+    super(message)
+    this.name = "AgentApiError"
+    this.code = code
+    this.status = status
+  }
+}
+
+export function isSessionRevisionConflict(cause: unknown) {
+  return cause instanceof AgentApiError
+    && cause.status === 409
+    && (cause.code === "A0409" || cause.code === "SESSION_REVISION_CONFLICT")
+    && cause.message === "SESSION_REVISION_CONFLICT"
+}
 
 function isApiResponse(value: unknown): value is ApiResponse<unknown> {
   if (!value || typeof value !== "object") return false
@@ -161,7 +185,11 @@ async function requestJson<T>(
   }
 
   if (!response.ok || !payload.success) {
-    throw new Error(payload.message || `请求失败：${response.status}`)
+    throw new AgentApiError(
+      payload.message || `请求失败：${response.status}`,
+      payload.code,
+      response.status,
+    )
   }
 
   return payload.data as T

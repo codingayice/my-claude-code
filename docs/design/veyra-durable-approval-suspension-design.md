@@ -1,5 +1,7 @@
 # Veyra 持久化审批挂起与统一 Run 控制设计
 
+> 后续修订：`veyra-unified-agent-state-machine-design.md` 统一了在线执行与恢复状态，并替代本文的独立持久化 `tool.approval.requested` 事件。新实现以完整 `tool.batch.planned` 建立 ToolBatch、ToolCallState 和 PendingApprovalState；本文保留审批控制协议背景，冲突处以后续设计为准。
+
 ## 1. 文档状态
 
 - 日期：2026-08-12
@@ -614,4 +616,3 @@ UI 是 SessionState 之上的体验层，不持久化 UI 事件。
 8. 没有为审批、恢复、取消分别创建 Command 类。
 9. 多工具审批、重复请求、并发客户端和关键崩溃窗口均有自动化测试。
 10. 旧审批 API、旧 Future 队列和旧数据兼容代码已经删除。
-

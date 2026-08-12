@@ -3,8 +3,10 @@ import assert from "node:assert/strict"
 
 import {
   AGENT_API_BASE,
+  AgentApiError,
   agentEventUrl,
   createAgentApiClient,
+  isSessionRevisionConflict,
   type AgentFetch,
 } from "./agent-api.ts"
 
@@ -155,6 +157,24 @@ test("surfaces unified API failures", async () => {
   )
 
   await assert.rejects(client.health(), /系统执行失败/)
+})
+
+test("identifies only journal revision conflicts as retryable", async () => {
+  const client = createAgentApiClient(async () => new Response(JSON.stringify({
+    success: false,
+    code: "A0409",
+    message: "SESSION_REVISION_CONFLICT",
+    data: null,
+  }), { status: 409, headers: { "Content-Type": "application/json" } }))
+
+  const conflict = await client.health().catch(cause => cause)
+  assert.ok(conflict instanceof AgentApiError)
+  assert.equal(isSessionRevisionConflict(conflict), true)
+  assert.equal(isSessionRevisionConflict(
+    new AgentApiError("SESSION_REVISION_CONFLICT", "SESSION_REVISION_CONFLICT", 409),
+  ), true)
+  assert.equal(isSessionRevisionConflict(new AgentApiError("RUN_NOT_ACTIVE", "A0409", 409)), false)
+  assert.equal(isSessionRevisionConflict(new Error("SESSION_REVISION_CONFLICT")), false)
 })
 
 test("queues, steers, and cancels followup inputs", async () => {

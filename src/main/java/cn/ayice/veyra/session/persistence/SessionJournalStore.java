@@ -149,6 +149,12 @@ public final class SessionJournalStore {
         return entries;
     }
 
+    /** 返回进程内已知的最新 Journal revision，首次访问时从持久化索引恢复。 */
+    public synchronized long currentRevision(String sessionId) {
+        Long next = nextSequences.get(sessionId);
+        return next == null ? index(sessionId).appliedRevision() : Math.max(0L, next - 1L);
+    }
+
     /** 扫描当前工作区 Journal 并生成按更新时间倒序的会话摘要。 */
     public synchronized List<SessionRecord> listSessions() {
         Path projectDir = pathResolver.projectDir();

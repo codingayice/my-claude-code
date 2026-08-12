@@ -481,6 +481,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             journalRecorder.finishRun(SessionJournalTypes.RUN_COMPLETED, payload);
         }
         lastRunStatus = "completed";
+        events.emit("session.revision", Map.of());
     }
 
     /** 持久化当前 Run 的失败终态。 */
@@ -490,6 +491,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             journalRecorder.finishRun(SessionJournalTypes.RUN_FAILED, payload);
         }
         lastRunStatus = "failed";
+        events.emit("session.revision", Map.of());
     }
 
     /**

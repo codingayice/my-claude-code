@@ -34,7 +34,7 @@ public class AgentLogController {
             var subscriber = new StreamingAgentEventSubscriber(output);
             AutoCloseable subscription = null;
             try {
-                subscriber.send(AgentEvent.of(0, "", null, "log.ready", Map.of()));
+                subscriber.send(AgentEvent.transientEvent(0, "", null, "log.ready", Map.of()));
                 subscription = AgentLogBus.global().subscribe(line -> sendLogLine(subscriber, line), true);
                 subscriber.awaitCloseWithHeartbeat();
             } catch (IOException e) {
@@ -57,7 +57,8 @@ public class AgentLogController {
      */
     private static void sendLogLine(StreamingAgentEventSubscriber subscriber, AgentLogLine line) {
         try {
-            AgentEvent event = AgentEvent.of(line.seq(), "", null, "log.line", Map.of("line", line.line()));
+            AgentEvent event = AgentEvent.transientEvent(
+                    line.seq(), "", null, "log.line", Map.of("line", line.line()));
             subscriber.send(event);
         } catch (IOException e) {
             log.debug("Log SSE client disconnected", e);

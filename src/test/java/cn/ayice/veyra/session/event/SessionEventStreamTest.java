@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -36,5 +37,30 @@ class SessionEventStreamTest {
         assertEquals("run-1", received.get(0).runId());
         assertEquals("run.started", received.get(0).type());
         assertEquals("hello", received.get(0).payload().get("text"));
+    }
+
+    @Test
+    void keepsSseSequenceSeparateFromJournalRevision() {
+        AtomicLong revision = new AtomicLong(7L);
+        SessionEventStream events = new SessionEventStream("session-1", 20L, revision::get);
+        List<AgentEvent> received = new ArrayList<>();
+        events.addSubscriber(new AgentEventSubscriber() {
+            @Override
+            public void send(AgentEvent event) {
+                received.add(event);
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+
+        events.emit("assistant.token", Map.of());
+        events.emit("context.warning", Map.of());
+        revision.incrementAndGet();
+        events.emit("permission.requested", Map.of());
+
+        assertEquals(List.of(21L, 22L, 23L), received.stream().map(AgentEvent::seq).toList());
+        assertEquals(List.of(7L, 7L, 8L), received.stream().map(AgentEvent::revision).toList());
     }
 }

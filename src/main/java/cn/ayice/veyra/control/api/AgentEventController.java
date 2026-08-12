@@ -51,13 +51,14 @@ public class AgentEventController {
                 long revision = runtimeHost.session(sessionId).revision();
                 subscriber.send(AgentEvent.of(
                         events.nextSeq(),
+                        revision,
                         sessionId,
                         null,
                         "session.ready",
                         Map.of("sessionId", sessionId, "revision", revision)
                 ));
                 subscriber.send(AgentEvent.of(
-                        events.nextSeq(), sessionId, null, "session.view",
+                        events.nextSeq(), revision, sessionId, null, "session.view",
                         MAPPER.convertValue(runtimeHost.session(sessionId), Map.class)
                 ));
                 subscriber.awaitCloseWithHeartbeat();

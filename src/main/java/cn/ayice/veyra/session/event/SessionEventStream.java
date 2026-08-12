@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * Ordered event stream owned by one active session runtime.
@@ -14,16 +15,23 @@ public class SessionEventStream {
     private final AtomicLong seq = new AtomicLong(0);
     private final List<AgentEventSubscriber> subscribers = new CopyOnWriteArrayList<>();
     private final String sessionId;
+    private final LongSupplier revisionSupplier;
     private volatile String runId;
 
     public SessionEventStream(String sessionId) {
-        this(sessionId, 0L);
+        this(sessionId, 0L, () -> 0L);
     }
 
     /** 使用持久化全局 revision 创建流，避免 Runtime 重建后 SSE 序号回退。 */
     public SessionEventStream(String sessionId, long initialRevision) {
+        this(sessionId, initialRevision, () -> initialRevision);
+    }
+
+    /** 使用独立的 SSE 序号和权威 Journal revision 创建事件流。 */
+    public SessionEventStream(String sessionId, long initialSequence, LongSupplier revisionSupplier) {
         this.sessionId = sessionId;
-        this.seq.set(Math.max(0L, initialRevision));
+        this.seq.set(Math.max(0L, initialSequence));
+        this.revisionSupplier = revisionSupplier;
     }
 
     /**
@@ -59,7 +67,8 @@ public class SessionEventStream {
      * 处理并传播 {@code emit} 对应的事件。
      */
     public void emit(String type, Map<String, Object> payload) {
-        AgentEvent event = AgentEvent.of(nextSeq(), sessionId, runId, type, payload);
+        AgentEvent event = AgentEvent.of(
+                nextSeq(), Math.max(0L, revisionSupplier.getAsLong()), sessionId, runId, type, payload);
         for (AgentEventSubscriber subscriber : subscribers) {
             try {
                 subscriber.send(event);

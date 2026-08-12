@@ -101,6 +101,7 @@ import { buildChatEntryCopyText, shouldShowChatEntryCopyAction } from '@/lib/mes
 import {
   agentApi,
   agentEventUrl,
+  isSessionRevisionConflict,
   type AgentApprovalDecision,
   type AgentPermissionMode,
   type AgentCheckpoint,
@@ -1819,7 +1820,6 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const [resolvingApprovals, setResolvingApprovals] = useState<string[]>([])
   const [detailSubagent, setDetailSubagent] = useState<SubagentEntry | null>(null)
   const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([])
-  const [sessionRevision, setSessionRevision] = useState(0)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [restoringRunId, setRestoringRunId] = useState<string | null>(null)
   const [branchParentRunId, setBranchParentRunId] = useState<string | null>(null)
@@ -1832,6 +1832,39 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const copyResetTimerRef = useRef<number | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const runModeRef = useRef<AgentRunMode>('chat')
+  const sessionRevisionRef = useRef(0)
+  const revisionSessionIdRef = useRef<string | null>(null)
+  const sessionMutationQueueRef = useRef<Promise<void>>(Promise.resolve())
+
+  const commitSessionRevision = useCallback((revision: number, revisionSessionId?: string) => {
+    if (revisionSessionId && revisionSessionIdRef.current !== revisionSessionId) {
+      revisionSessionIdRef.current = revisionSessionId
+      sessionRevisionRef.current = 0
+    }
+    if (!Number.isFinite(revision) || revision < sessionRevisionRef.current) return
+    sessionRevisionRef.current = revision
+  }, [])
+
+  const runSessionMutation = useCallback(<T extends { revision: number },>(
+    mutationSessionId: string,
+    mutation: (expectedRevision: number) => Promise<T>,
+  ) => {
+    const result = sessionMutationQueueRef.current.then(async () => {
+      let value: T
+      try {
+        value = await mutation(sessionRevisionRef.current)
+      } catch (cause) {
+        if (!isSessionRevisionConflict(cause)) throw cause
+        const latest = await agentApi.session(mutationSessionId)
+        commitSessionRevision(latest.revision, latest.sessionId)
+        value = await mutation(sessionRevisionRef.current)
+      }
+      commitSessionRevision(value.revision)
+      return value
+    })
+    sessionMutationQueueRef.current = result.then(() => undefined, () => undefined)
+    return result
+  }, [commitSessionRevision])
 
   useEffect(() => {
     if (typeof initialInput === 'string') {
@@ -1880,6 +1913,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     const eventTypes = [
       'session.ready',
       'session.view',
+      'session.revision',
       'user.message',
       'run.started',
       'assistant.thinking.token',
@@ -1920,6 +1954,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     ] as const
 
     const applyAgentEvent = (data: AgentEvent) => {
+      commitSessionRevision(data.revision, data.sessionId)
       if (data.type === 'context.snapshot' || data.type === 'llm.output') {
         setLlmContextTurns(current => applyLlmContextEvent(current, {
           type: data.type,
@@ -1930,15 +1965,16 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       const runId = data.runId ?? undefined
       const payload = data.payload ?? {}
 
-      const recordTerminalCheckpoint = (status: string) => {
-        if (!runId) return
-        setSessionRevision(data.seq)
-        setCheckpoints(current => [
-          ...current
-            .filter(item => item.runId !== runId)
-            .map(item => ({ ...item, current: false })),
-          { runId, terminalRevision: data.seq, status, current: true, restorable: true },
-        ])
+      const refreshTerminalCheckpoints = () => {
+        if (!runId || !data.sessionId) return
+        void agentApi.checkpoints(data.sessionId).then(result => setCheckpoints(result.items))
+      }
+
+      if (data.type === 'session.revision') {
+        if (data.sessionId) {
+          void agentApi.checkpoints(data.sessionId).then(result => setCheckpoints(result.items))
+        }
+        return
       }
 
       if (data.type === 'context.warning') {
@@ -1966,7 +2002,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         if (view.sessionId) {
           runModeRef.current = view.runMode
           setMessages(chatEntriesFromSessionView(view))
-          setSessionRevision(view.revision)
+          commitSessionRevision(view.revision, view.sessionId)
           setActiveRunId(view.activeRunId ?? null)
           setPanelState(view.activeRunId ? 'running' : 'ready')
         }
@@ -2501,7 +2537,6 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         flushTokenBuffer()
         setPanelState('ready')
         setError(null)
-        recordTerminalCheckpoint('completed')
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
@@ -2521,7 +2556,6 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         flushTokenBuffer()
         setPanelState('error')
         setError(content)
-        recordTerminalCheckpoint('failed')
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
@@ -2546,7 +2580,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         flushTokenBuffer()
         setPanelState('ready')
         setError(null)
-        recordTerminalCheckpoint(data.type === 'run.cancelled' ? 'cancelled' : 'interrupted')
+        refreshTerminalCheckpoints()
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
@@ -2604,7 +2638,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         }
 
         setSessionId(data.sessionId)
-        setSessionRevision(data.revision)
+        commitSessionRevision(data.revision, data.sessionId)
         setActiveRunId(data.activeRunId ?? null)
         onSessionReady?.(data.sessionId)
         setWorkingDir(data.workingDir)
@@ -2665,21 +2699,22 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       tokenBufferRef.current.clear()
       source?.close()
     }
-  }, [initialSessionId, onSessionReady, recoveryRevision])
+  }, [commitSessionRevision, initialSessionId, onSessionReady, recoveryRevision])
 
   const restoreCheckpoint = useCallback(async (runId: string) => {
     if (!sessionId || panelState === 'running') return
     setRestoringRunId(runId)
     setError(null)
     try {
-      await agentApi.restoreCheckpoint(sessionId, runId, sessionRevision)
+      await runSessionMutation(sessionId, expectedRevision =>
+        agentApi.restoreCheckpoint(sessionId, runId, expectedRevision))
       setRecoveryRevision(current => current + 1)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '检查点恢复失败。')
     } finally {
       setRestoringRunId(null)
     }
-  }, [panelState, sessionId, sessionRevision])
+  }, [panelState, runSessionMutation, sessionId])
 
   const copyMessage = useCallback(async (entry: ChatEntry) => {
     const text = buildChatEntryCopyText(entry)
@@ -2797,14 +2832,15 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     setResolvingApprovals(current => (current.includes(approvalId) ? current : [...current, approvalId]))
 
     try {
-      await agentApi.controlRun(
-        sessionId, activeRunId, approvalId, decision, sessionRevision, crypto.randomUUID(),
-      )
+      const commandId = crypto.randomUUID()
+      await runSessionMutation(sessionId, expectedRevision => agentApi.controlRun(
+        sessionId, activeRunId, approvalId, decision, expectedRevision, commandId,
+      ))
     } catch (cause) {
       setResolvingApprovals(current => current.filter(item => item !== approvalId))
       setError(cause instanceof Error ? cause.message : '处理授权失败。')
     }
-  }, [sessionId, activeRunId, sessionRevision])
+  }, [sessionId, activeRunId, runSessionMutation])
 
   const workspaceOptions = useMemo(
     () => Array.from(new Set([workspaceRoot, workingDir].filter((item): item is string => Boolean(item)))),
@@ -2828,26 +2864,25 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     runModeRef.current = nextRunMode
 
     try {
-      const data = await agentApi.updateSessionSettings(
-        sessionId,
-        {
+      const data = await runSessionMutation(sessionId, expectedRevision => agentApi.updateSessionSettings(
+        sessionId, {
           workingDir: nextWorkingDir,
           permissionMode: nextPermissionMode,
           runMode: nextRunMode,
-          expectedRevision: sessionRevision,
+          expectedRevision,
         },
-      )
+      ))
       setWorkingDir(data.workingDir)
       setPermissionMode(normalizePermissionMode(data.permissionMode))
       setRunMode(normalizeRunMode(data.runMode))
       runModeRef.current = normalizeRunMode(data.runMode)
-      setSessionRevision(data.revision)
+      commitSessionRevision(data.revision)
     } catch (cause) {
       runModeRef.current = runMode
       setRunMode(runMode)
       setError(cause instanceof Error ? cause.message : '更新会话配置失败。')
     }
-  }, [permissionMode, runMode, sessionId, sessionRevision, workingDir])
+  }, [commitSessionRevision, permissionMode, runMode, runSessionMutation, sessionId, workingDir])
 
   const canSubmit = Boolean(sessionId && draft.trim()) && panelState !== 'connecting'
   const isEmptyConversation = messages.length === 0

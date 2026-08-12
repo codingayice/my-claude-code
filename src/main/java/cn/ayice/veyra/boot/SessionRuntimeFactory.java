@@ -146,7 +146,8 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
     ) {
         // 首先创建会话独占的事件、审批、权限和转录组件，避免可变状态跨会话共享。
         long initialRevision = sessionPersisted ? journalStore.index(sessionId).appliedRevision() : 0L;
-        SessionEventStream events = new SessionEventStream(sessionId, initialRevision);
+        SessionEventStream events = new SessionEventStream(
+                sessionId, initialRevision, () -> journalStore.currentRevision(sessionId));
         SessionJournalRecorder journalRecorder = new SessionJournalRecorder(
                 sessionId,
                 journalStore,
