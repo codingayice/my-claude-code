@@ -65,10 +65,6 @@ class AgentServerApplicationTest {
             assertEquals(200, slashCommands.status(), slashCommands.body());
             assertTrue(slashCommands.body().contains("\"items\""));
 
-            HttpResult approvals = get(base + "/sessions/" + sessionId + "/approvals");
-            assertEquals(200, approvals.status(), approvals.body());
-            assertTrue(approvals.body().contains("\"items\""));
-
             HttpResult emptyRun = postJson(base + "/sessions/" + sessionId + "/runs", "{\"input\":\"\",\"mode\":\"agent\"}");
             assertEquals(202, emptyRun.status(), emptyRun.body());
             assertTrue(emptyRun.body().contains("\"accepted\":false"));
@@ -84,7 +80,7 @@ class AgentServerApplicationTest {
             assertMappedTo(context, "/v1/health", "AgentController");
             assertMappedTo(context, "/v1/sessions", "AgentController");
             assertMappedTo(context, "/v1/sessions/{sessionId}/runs", "AgentController");
-            assertMappedTo(context, "/v1/sessions/{sessionId}/approvals", "AgentController");
+            assertMappedTo(context, "/v1/sessions/{sessionId}/runs/{runId}/control", "AgentController");
             assertMappedTo(context, "/v1/sessions/{sessionId}/slash-commands", "AgentController");
             assertMappedTo(context, "/v1/sessions/{sessionId}/events", "AgentEventController");
             assertMappedTo(context, "/v1/logs/events", "AgentLogController");

@@ -1,6 +1,7 @@
 package cn.ayice.veyra.runtime;
 
 import java.util.Map;
+import cn.ayice.veyra.runtime.agent.AgentStepResult;
 
 /**
  * Runtime-owned execution target used by the kernel without depending on host internals.
@@ -20,7 +21,12 @@ public interface RunTarget {
     /**
      * 把输入交给当前会话的主 Agent 循环执行。
      */
-    void executeAgent(String input);
+    AgentStepResult executeAgent(String input);
+
+    /** 从持久化状态继续同一个 Agent Run。 */
+    default AgentStepResult resumeAgent() {
+        throw new UnsupportedOperationException("agent resume is not supported");
+    }
 
     /**
      * 把输入交给当前会话的无工具 Chat 循环执行。

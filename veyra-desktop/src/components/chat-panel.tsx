@@ -94,6 +94,7 @@ import { cn } from '@/lib/utils'
 import {
   isActiveStreamingSegment,
   shouldCloseProcessOnAssistantMessage,
+  visibleAssistantThinking,
 } from '@/lib/agent-segments'
 import { applyLlmContextEvent, type LlmContextMessage, type LlmContextTurn } from '@/lib/llm-context-view'
 import { buildChatEntryCopyText, shouldShowChatEntryCopyAction } from '@/lib/message-copy'
@@ -187,7 +188,7 @@ type ProcessSegment = {
   id: string
   type: 'process'
   status: ProcessStatus
-  startedAtMs: number
+  startedAtMs?: number
   endedAtMs?: number
   tools: ToolEntry[]
   stepLabel?: string
@@ -273,6 +274,12 @@ function toolView(tool: AgentToolCallState): ToolEntry {
 /** 完整 SessionView 的唯一冷加载适配器；不重放持久化 UI 事件。 */
 function chatEntriesFromSessionView(session: AgentSessionResponse): ChatEntry[] {
   const entries: ChatEntry[] = []
+  const lastAssistantRevisionByRun = new Map<string, number>()
+  for (const message of session.agent.messages) {
+    if (message.role === 'ASSISTANT' && message.runId) {
+      lastAssistantRevisionByRun.set(message.runId, message.sourceRevision)
+    }
+  }
   for (const message of session.agent.messages) {
     if (message.role === 'USER') {
       if (message.visible) entries.push({
@@ -286,30 +293,36 @@ function chatEntriesFromSessionView(session: AgentSessionResponse): ChatEntry[] 
     }
     if (message.role !== 'ASSISTANT') continue
     const segments: AssistantSegment[] = []
-    if (message.thinking) segments.push({
-      id: `${message.messageId}-reasoning`, type: 'reasoning', content: message.thinking, streaming: false,
+    const visibleThinking = visibleAssistantThinking(session.runMode, message.thinking)
+    if (visibleThinking) segments.push({
+      id: `${message.messageId}-reasoning`, type: 'reasoning', content: visibleThinking, streaming: false,
     })
     if (message.text) segments.push({
       id: `${message.messageId}-text`, type: 'text', content: message.text, streaming: false,
     })
-    if (message.toolCalls.length > 0) segments.push({
-      id: `${message.messageId}-tools`,
-      type: 'process',
-      status: message.toolCalls.every(tool => tool.phase === 'RESULT_RECORDED') ? 'completed' : 'running',
-      startedAtMs: message.sourceRevision,
-      tools: message.toolCalls.map(tool => toolView(session.agent.toolCalls[tool.toolUseId] ?? tool)),
-    })
+    if (message.toolCalls.length > 0) {
+      const tools = message.toolCalls.map(tool => session.agent.toolCalls[tool.toolUseId] ?? tool)
+      const completed = tools.every(tool => tool.phase === 'RESULT_RECORDED')
+      segments.push({
+        id: `${message.messageId}-tools`,
+        type: 'process',
+        status: completed ? 'completed' : 'running',
+        tools: tools.map(toolView),
+      })
+    }
     entries.push({
       id: message.messageId,
       role: 'assistant',
       runId: message.runId ?? undefined,
       streaming: session.activeRunId === message.runId,
-      final: session.activeRunId !== message.runId,
+      final: session.activeRunId !== message.runId
+        && (!message.runId || lastAssistantRevisionByRun.get(message.runId) === message.sourceRevision),
       segments,
     })
   }
   for (const [approvalId, approval] of Object.entries(session.agent.approvals)) {
-    const runId = typeof approval.runId === 'string' ? approval.runId : session.activeRunId ?? undefined
+    if (approval.status !== 'PENDING') continue
+    const runId = session.activeRunId ?? undefined
     const index = findLastIndex(entries, entry => entry.role === 'assistant' && (!runId || entry.runId === runId))
     if (index < 0) continue
     entries[index] = {
@@ -318,8 +331,8 @@ function chatEntriesFromSessionView(session: AgentSessionResponse): ChatEntry[] 
         id: `approval-${approvalId}`,
         type: 'approval',
         approvalId,
-        toolName: typeof approval.tool === 'string' ? approval.tool : '工具',
-        reason: typeof approval.reason === 'string' ? approval.reason : undefined,
+        toolName: approval.tool || '工具',
+        reason: approval.reason || undefined,
         input: approval.arguments,
       }],
     }
@@ -1039,7 +1052,7 @@ function ProcessPanel({
   titlePrefix?: string
 }) {
   const [open, setOpen] = useState(false)
-  const nowMs = useNow(process.status === 'running')
+  const nowMs = useNow(process.status === 'running' && process.startedAtMs !== undefined)
 
   useEffect(() => {
     if (process.status !== 'running') {
@@ -1051,10 +1064,9 @@ function ProcessPanel({
     () => process.tools.filter(tool => !isSubagentLaunchTool(tool.name)),
     [process.tools],
   )
-  const totalDurationMs =
-    process.endedAtMs !== undefined
-      ? process.endedAtMs - process.startedAtMs
-      : nowMs - process.startedAtMs
+  const totalDurationMs = process.startedAtMs === undefined
+    ? undefined
+    : (process.endedAtMs ?? nowMs) - process.startedAtMs
   const summaryBits = [
     visibleTools.length > 0 ? `${visibleTools.length} 个工具` : '',
   ].filter(Boolean)
@@ -1070,9 +1082,11 @@ function ProcessPanel({
           ) : (
             <span>{titlePrefix ? `${titlePrefix}：${processLabel(process.status)}` : processLabel(process.status)}</span>
           )}
-          <span className="tabular-nums text-xs text-muted-foreground">
-            {formatDuration(totalDurationMs)}
-          </span>
+          {totalDurationMs !== undefined ? (
+            <span className="tabular-nums text-xs text-muted-foreground">
+              {formatDuration(totalDurationMs)}
+            </span>
+          ) : null}
           {summaryBits.length > 0 ? (
             <span className="truncate text-xs text-muted-foreground">
               {summaryBits.join(' / ')}
@@ -1806,6 +1820,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const [detailSubagent, setDetailSubagent] = useState<SubagentEntry | null>(null)
   const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([])
   const [sessionRevision, setSessionRevision] = useState(0)
+  const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [restoringRunId, setRestoringRunId] = useState<string | null>(null)
   const [branchParentRunId, setBranchParentRunId] = useState<string | null>(null)
   const [recoveryRevision, setRecoveryRevision] = useState(0)
@@ -1816,6 +1831,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const tokenFlushTimerRef = useRef<number | null>(null)
   const copyResetTimerRef = useRef<number | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const runModeRef = useRef<AgentRunMode>('chat')
 
   useEffect(() => {
     if (typeof initialInput === 'string') {
@@ -1948,8 +1964,10 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       if (data.type === 'session.view') {
         const view = payload as unknown as AgentSessionResponse
         if (view.sessionId) {
+          runModeRef.current = view.runMode
           setMessages(chatEntriesFromSessionView(view))
           setSessionRevision(view.revision)
+          setActiveRunId(view.activeRunId ?? null)
           setPanelState(view.activeRunId ? 'running' : 'ready')
         }
         return
@@ -2032,6 +2050,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       }
 
       if (data.type === 'assistant.thinking.token') {
+        if (runModeRef.current === 'agent') return
         const text = typeof payload.text === 'string' ? payload.text : ''
         if (!text) return
 
@@ -2047,7 +2066,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
 
       if (data.type === 'assistant.message.completed') {
         const text = typeof payload.text === 'string' ? payload.text : ''
-        const thinking = typeof payload.thinking === 'string' ? payload.thinking : ''
+        const thinking = visibleAssistantThinking(runModeRef.current, payload.thinking)
         const hasToolRequests = payload.hasToolRequests === true
         const closeProcess = shouldCloseProcessOnAssistantMessage(hasToolRequests)
         flushTokenBuffer()
@@ -2565,6 +2584,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
           ? await agentApi.session(initialSessionId)
           : await agentApi.createSession()
         if (closed) return
+        runModeRef.current = data.runMode
 
         if (initialSessionId) {
           const checkpointData = await agentApi.checkpoints(initialSessionId)
@@ -2585,6 +2605,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
 
         setSessionId(data.sessionId)
         setSessionRevision(data.revision)
+        setActiveRunId(data.activeRunId ?? null)
         onSessionReady?.(data.sessionId)
         setWorkingDir(data.workingDir)
         setPermissionMode(normalizePermissionMode(data.permissionMode))
@@ -2771,17 +2792,19 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   }, [cancelPendingInput])
 
   const resolveApproval = useCallback(async (approvalId: string, decision: ApprovalDecision) => {
-    if (!sessionId) return
+    if (!sessionId || !activeRunId) return
 
     setResolvingApprovals(current => (current.includes(approvalId) ? current : [...current, approvalId]))
 
     try {
-      await agentApi.decideApproval(sessionId, approvalId, decision)
+      await agentApi.controlRun(
+        sessionId, activeRunId, approvalId, decision, sessionRevision, crypto.randomUUID(),
+      )
     } catch (cause) {
       setResolvingApprovals(current => current.filter(item => item !== approvalId))
       setError(cause instanceof Error ? cause.message : '处理授权失败。')
     }
-  }, [sessionId])
+  }, [sessionId, activeRunId, sessionRevision])
 
   const workspaceOptions = useMemo(
     () => Array.from(new Set([workspaceRoot, workingDir].filter((item): item is string => Boolean(item)))),
@@ -2802,6 +2825,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
     setWorkingDir(nextWorkingDir)
     setPermissionMode(nextPermissionMode)
     setRunMode(nextRunMode)
+    runModeRef.current = nextRunMode
 
     try {
       const data = await agentApi.updateSessionSettings(
@@ -2816,8 +2840,11 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       setWorkingDir(data.workingDir)
       setPermissionMode(normalizePermissionMode(data.permissionMode))
       setRunMode(normalizeRunMode(data.runMode))
+      runModeRef.current = normalizeRunMode(data.runMode)
       setSessionRevision(data.revision)
     } catch (cause) {
+      runModeRef.current = runMode
+      setRunMode(runMode)
       setError(cause instanceof Error ? cause.message : '更新会话配置失败。')
     }
   }, [permissionMode, runMode, sessionId, sessionRevision, workingDir])

@@ -8,7 +8,6 @@ import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.compaction.BackgroundSummaryScheduler;
 import cn.ayice.veyra.runtime.session.SessionRuntime;
 import cn.ayice.veyra.runtime.session.RuntimeSessionRegistry;
-import cn.ayice.veyra.runtime.session.ToolApprovalQueue;
 import cn.ayice.veyra.session.event.SessionAgentEventSink;
 import cn.ayice.veyra.session.event.SessionEventStream;
 import cn.ayice.veyra.interaction.command.SlashCommands;
@@ -154,7 +153,6 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 sessionPersisted
         );
         SessionAgentEventSink eventSink = new SessionAgentEventSink(events);
-        ToolApprovalQueue confirmation = new ToolApprovalQueue(eventSink, journalRecorder);
         PermissionContextStore permissionContextStore = new PermissionContextStore(
                 buildPermissionContext(restoredSettings)
         );
@@ -164,7 +162,6 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
         SubagentRuntime agentRuntime = new SubagentRuntime(
                 ai,
                 config,
-                confirmation,
                 eventSink,
                 permissionContextStore,
                 this::createSubagentToolCatalog
@@ -240,7 +237,6 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 toolCatalog,
                 contextBuilder,
                 backgroundManager,
-                confirmation,
                 permissionContextStore,
                 todoManager,
                 compactConfig,
@@ -266,7 +262,6 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
         SessionRuntime runtime = new SessionRuntime(
                 sessionId,
                 events,
-                confirmation,
                 agentLoop,
                 chatLoop,
                 permissionContextStore,

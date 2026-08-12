@@ -99,7 +99,6 @@ class SubagentRuntimeMemoryProfileTest {
         return new SubagentRuntime(
                 ai,
                 new TestConfig(tempDir),
-                null,
                 eventSink,
                 null,
                 SubagentToolCatalogs.factory(memory, executor)

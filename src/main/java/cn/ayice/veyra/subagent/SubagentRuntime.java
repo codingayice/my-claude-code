@@ -23,7 +23,6 @@ import cn.ayice.veyra.tool.ToolService.Authorization;
 import cn.ayice.veyra.tool.ToolService;
 import cn.ayice.veyra.tool.ToolService.Execution;
 import cn.ayice.veyra.tool.ToolExecutionObserver;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -49,7 +48,6 @@ public class SubagentRuntime implements SubagentExecution {
 
     private final AIService ai;
     private final AppConfig config;
-    private final ToolExecutionConfirmation confirmation;
     private final AgentEventSink eventSink;
     private final PermissionContextStore permissionContextStore;
     private final SubagentToolCatalogFactory toolCatalogFactory;
@@ -60,14 +58,12 @@ public class SubagentRuntime implements SubagentExecution {
     public SubagentRuntime(
             AIService ai,
             AppConfig config,
-            ToolExecutionConfirmation confirmation,
             AgentEventSink eventSink,
             PermissionContextStore permissionContextStore,
             SubagentToolCatalogFactory toolCatalogFactory
     ) {
         this.ai = ai;
         this.config = config;
-        this.confirmation = confirmation;
         this.eventSink = eventSink;
         this.permissionContextStore = permissionContextStore;
         this.toolCatalogFactory = toolCatalogFactory;
@@ -110,7 +106,7 @@ public class SubagentRuntime implements SubagentExecution {
         long startedAt = System.currentTimeMillis();
         PermissionPolicy policy = profile.permissionPolicy();
         ToolCatalog toolset = toolCatalogFactory.create(profile);
-        ToolService toolEngine = new ToolService(toolset, confirmation, permissionContextStore);
+        ToolService toolEngine = new ToolService(toolset, permissionContextStore);
 
         CompactionConfig runtimeCompactCfg = CompactionConfig.from(config);
         ContextService contextBuilder = new ContextService(
@@ -226,20 +222,13 @@ public class SubagentRuntime implements SubagentExecution {
                             /**
                              * {@inheritDoc}
                              */
-                            @Override
-                            public void permissionResolved(
-                                    ToolExecutionRequest toolRequest,
-                                    ToolExecutionConfirmation.Choice choice
-                            ) {
-                                emitTaskEvent(profile, "task.permission.resolved", agentId, description,
-                                        Map.of(
-                                                "toolUseId", toolRequest.id(),
-                                                "name", toolRequest.name(),
-                                                "decision", choice.name().toLowerCase()
-                                        ));
-                            }
                         }
                 );
+                if (authorization.approvalRequired()) {
+                    authorization = new ToolService.Authorization(
+                            "denied", authorization.decision(), authorization.request(), authorization.tool(),
+                            authorization.context(), null, policy.deniedApprovalReason(authorization.decision()));
+                }
                 permissionContext = authorization.context();
                 if (!authorization.allowed()) {
                     emitTaskEvent(profile, "task.tool.call.rejected", agentId, description,

@@ -10,7 +10,6 @@ import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionMode;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.tool.ToolCatalog;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.state.TodoManager;
 import cn.ayice.veyra.tool.state.FileStateCache;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -63,12 +62,6 @@ class AgentLoopBlockingLimitTest {
                 catalog,
                 contextBuilder,
                 null,
-                new ToolExecutionConfirmation() {
-                    @Override
-                    public Choice ask(ToolExecutionRequest req, String reason) {
-                        return Choice.ALLOW_ONCE;
-                    }
-                },
                 new PermissionContextStore(PermissionContext.builder()
                         .mode(PermissionMode.AUTO_APPROVE)
                         .workingDir(tempDir)

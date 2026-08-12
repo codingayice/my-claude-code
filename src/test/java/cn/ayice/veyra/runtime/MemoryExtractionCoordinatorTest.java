@@ -50,7 +50,6 @@ class MemoryExtractionCoordinatorTest {
                 new TestConfig(tempDir),
                 null,
                 null,
-                null,
                 SubagentToolCatalogs.factory(memory, Runnable::run)
         );
         MemoryExtractionCoordinator coordinator = new MemoryExtractionCoordinator(
@@ -167,7 +166,6 @@ class MemoryExtractionCoordinatorTest {
             super(
                     null,
                     new TestConfig(workspace),
-                    null,
                     null,
                     null,
                     SubagentToolCatalogs.factory(memory, Runnable::run)

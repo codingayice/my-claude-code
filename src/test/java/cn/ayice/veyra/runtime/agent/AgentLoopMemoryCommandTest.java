@@ -13,7 +13,6 @@ import cn.ayice.veyra.memory.MemoryService;
 import cn.ayice.veyra.session.event.AgentEventSink;
 import cn.ayice.veyra.llm.AIService;
 import cn.ayice.veyra.tool.ToolCatalog;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.memory.tool.MemoryTool;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
@@ -61,12 +60,6 @@ class AgentLoopMemoryCommandTest {
                 catalog,
                 contextBuilder,
                 null,
-                new ToolExecutionConfirmation() {
-                    @Override
-                    public Choice ask(ToolExecutionRequest req, String reason) {
-                        return Choice.ALLOW_ONCE;
-                    }
-                },
                 new PermissionContextStore(PermissionContext.builder()
                         .mode(PermissionMode.AUTO_APPROVE)
                         .workingDir(tempDir)

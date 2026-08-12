@@ -53,7 +53,10 @@ export type AgentStateView = {
   run?: { runId: string; phase: string; finalResponse: string } | null
   messages: AgentMessageState[]
   toolCalls: Record<string, AgentToolCallState>
-  approvals: Record<string, Record<string, unknown>>
+  approvals: Record<string, {
+    approvalId: string; toolUseId: string; tool: string; arguments: string
+    reason: string; status: "PENDING" | "RESOLVED"; decision: string
+  }>
   pendingInputs: Array<Record<string, unknown>>
   todos: Array<Record<string, unknown>>
   tasks: Record<string, Record<string, unknown>>
@@ -262,17 +265,23 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
         { method: "DELETE" }
       ),
 
-    decideApproval: (
+    controlRun: (
       sessionId: string,
+      runId: string,
       approvalId: string,
-      decision: AgentApprovalDecision
+      decision: AgentApprovalDecision,
+      expectedRevision: number,
+      commandId: string
     ) =>
-      requestJson<{ ok: boolean }>(
+      requestJson<{ status: string; runId: string; revision: number; output: Record<string, unknown> }>(
         fetcher,
-        `/sessions/${encodePathSegment(sessionId)}/approvals/${encodePathSegment(approvalId)}/decision`,
+        `/sessions/${encodePathSegment(sessionId)}/runs/${encodePathSegment(runId)}/control`,
         {
           method: "POST",
-          body: JSON.stringify({ decision }),
+          body: JSON.stringify({
+            action: "resume", cause: "approval", input: { approvalId, decision },
+            expectedRevision, commandId,
+          }),
         }
       ),
 

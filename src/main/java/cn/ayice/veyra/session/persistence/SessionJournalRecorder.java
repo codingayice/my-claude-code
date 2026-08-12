@@ -172,4 +172,12 @@ public final class SessionJournalRecorder implements JournalMessageRecorder {
         return currentRunId;
     }
 
+    /** 外部控制已经写入终态时释放当前 Run 绑定。 */
+    public synchronized void releaseRun(String runId) {
+        if (Objects.equals(currentRunId, runId)) {
+            currentRunId = null;
+            acceptedInput = null;
+        }
+    }
+
 }

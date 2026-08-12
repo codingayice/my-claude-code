@@ -64,7 +64,7 @@ public final class SessionRecovery {
         Map<String, StartedTask> startedTasks = new LinkedHashMap<>();
         Set<String> finishedTasks = new HashSet<>();
         Map<String, String> requestedApprovals = new LinkedHashMap<>();
-        Set<String> resolvedApprovals = new HashSet<>();
+        Map<String, String> approvalTools = new LinkedHashMap<>();
         Map<String, String> openRuns = new LinkedHashMap<>();
         Set<String> terminalRuns = new HashSet<>();
         Map<String, String> openModelCalls = new LinkedHashMap<>();
@@ -101,11 +101,11 @@ public final class SessionRecovery {
                      SessionJournalTypes.TASK_KILLED,
                      SessionJournalTypes.TASK_INTERRUPTED ->
                         finishedTasks.add(text(entry.payload(), "taskId"));
-                case SessionJournalTypes.PERMISSION_REQUESTED ->
-                        requestedApprovals.put(text(entry.payload(), "approvalId"), entry.runId());
-                case SessionJournalTypes.PERMISSION_RESOLVED,
-                     SessionJournalTypes.PERMISSION_INTERRUPTED ->
-                        resolvedApprovals.add(text(entry.payload(), "approvalId"));
+                case SessionJournalTypes.PERMISSION_REQUESTED -> {
+                    String approvalId = text(entry.payload(), "approvalId");
+                    requestedApprovals.put(approvalId, entry.runId());
+                    approvalTools.put(text(entry.payload(), "toolUseId"), approvalId);
+                }
                 default -> {
                 }
             }
@@ -121,6 +121,9 @@ public final class SessionRecovery {
 
         for (ToolUse tool : toolUses.values()) {
             if (completedTools.contains(tool.id())) {
+                continue;
+            }
+            if (approvalTools.containsKey(tool.id()) && !startedTools.contains(tool.id())) {
                 continue;
             }
             boolean started = startedTools.contains(tool.id());
@@ -159,22 +162,11 @@ public final class SessionRecovery {
             entries.add(repair);
         }
 
-        for (Map.Entry<String, String> approval : requestedApprovals.entrySet()) {
-            if (resolvedApprovals.contains(approval.getKey())) {
-                continue;
-            }
-            SessionJournalEntry repair = store.append(
-                    sessionId,
-                    approval.getValue(),
-                    SessionJournalTypes.PERMISSION_INTERRUPTED,
-                    Map.of("approvalId", approval.getKey(), "decision", "interrupted"),
-                    true
-            );
-            entries.add(repair);
-        }
-
         for (String runId : openRuns.keySet()) {
             if (terminalRuns.contains(runId)) {
+                continue;
+            }
+            if (requestedApprovals.containsValue(runId)) {
                 continue;
             }
             SessionJournalEntry repair = store.append(

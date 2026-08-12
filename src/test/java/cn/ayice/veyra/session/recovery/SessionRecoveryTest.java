@@ -1,5 +1,6 @@
 package cn.ayice.veyra.session.recovery;
 
+import cn.ayice.veyra.session.PendingApprovalState;
 import cn.ayice.veyra.session.persistence.JournalMessageCodec;
 import cn.ayice.veyra.session.persistence.SessionJournalEntry;
 import cn.ayice.veyra.session.persistence.SessionJournalStore;
@@ -160,7 +161,8 @@ class SessionRecoveryTest {
         assertEquals(2, result.agentHistory().size());
         assertEquals(1, result.agentState().todos().size());
         assertEquals("完成", result.agentState().tasks().get("task-1").get("content"));
-        assertTrue(result.agentState().approvals().isEmpty());
+        assertEquals(PendingApprovalState.ApprovalStatus.RESOLVED,
+                result.agentState().approvals().get("approval-1").status());
     }
 
     @Test
@@ -201,7 +203,7 @@ class SessionRecoveryTest {
     }
 
     @Test
-    void marksPendingApprovalInterruptedDuringRecovery() {
+    void preservesPendingApprovalAndActiveRunDuringRecovery() {
         SessionJournalStore store = store();
         createSessionAndRun(store, "s1", "r1");
         store.append("s1", "r1", SessionJournalTypes.PERMISSION_REQUESTED, Map.of(
@@ -210,9 +212,14 @@ class SessionRecoveryTest {
 
         SessionRecovery.RecoveryResult result = recovery(store).recover("s1");
 
-        assertTrue(result.agentState().approvals().isEmpty());
-        assertTrue(store.read("s1").stream().anyMatch(event ->
-                SessionJournalTypes.PERMISSION_INTERRUPTED.equals(event.type())));
+        assertEquals(PendingApprovalState.ApprovalStatus.PENDING,
+                result.agentState().approvals().get("approval-1").status());
+        assertEquals(cn.ayice.veyra.session.state.AgentPhase.WAITING_APPROVAL,
+                result.agentState().run().phase());
+        assertEquals(1, store.read("s1").stream().filter(event ->
+                SessionJournalTypes.PERMISSION_REQUESTED.equals(event.type())).count());
+        assertFalse(store.read("s1").stream().anyMatch(event ->
+                SessionJournalTypes.RUN_INTERRUPTED.equals(event.type())));
     }
 
     private void createSessionAndRun(SessionJournalStore store, String sessionId, String runId) {

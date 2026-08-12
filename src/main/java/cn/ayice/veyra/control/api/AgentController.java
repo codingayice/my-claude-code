@@ -1,8 +1,6 @@
 package cn.ayice.veyra.control.api;
 
 import cn.ayice.veyra.control.AgentApplicationService;
-import cn.ayice.veyra.control.dto.approval.ApprovalDecisionRequest;
-import cn.ayice.veyra.control.dto.approval.ApprovalListResponse;
 import cn.ayice.veyra.control.dto.command.ExecuteSlashCommandRequest;
 import cn.ayice.veyra.control.dto.command.ExecuteSlashCommandResponse;
 import cn.ayice.veyra.control.dto.command.SlashCommandListResponse;
@@ -11,6 +9,8 @@ import cn.ayice.veyra.control.dto.run.CreateRunRequest;
 import cn.ayice.veyra.control.dto.run.CreateRunResponse;
 import cn.ayice.veyra.control.dto.run.CreateFollowupRequest;
 import cn.ayice.veyra.control.dto.run.CreateFollowupResponse;
+import cn.ayice.veyra.runtime.control.RunControlRequest;
+import cn.ayice.veyra.runtime.control.RunControlResult;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
@@ -196,26 +196,14 @@ public class AgentController {
         return ApiResponse.success(application.executeCommand(sessionId, request.command()));
     }
 
-    /**
-     * 返回当前会话尚未处理的工具审批快照。
-     */
-    @GetMapping("/sessions/{sessionId}/approvals")
-    public ApiResponse<ApprovalListResponse> pendingApprovals(@PathVariable("sessionId") String sessionId) {
-        return ApiResponse.success(application.pendingApprovals(sessionId));
-    }
-
-    /**
-     * 校验审批选项并完成指定待审批工具调用，返回最新审批状态。
-     */
-    @PostMapping("/sessions/{sessionId}/approvals/{approvalId}/decision")
-    public ApiResponse<Map<String, Object>> decideApproval(
+    /** 所有审批、恢复和取消动作共用的 Run 控制入口。 */
+    @PostMapping("/sessions/{sessionId}/runs/{runId}/control")
+    public ResponseEntity<ApiResponse<RunControlResult>> controlRun(
             @PathVariable("sessionId") String sessionId,
-            @PathVariable("approvalId") String approvalId,
-            @RequestBody ApprovalDecisionRequest request
+            @PathVariable("runId") String runId,
+            @RequestBody RunControlRequest request
     ) {
-        if (!application.decideApproval(sessionId, approvalId, request.decision())) {
-            throw new AgentApiException(HttpStatus.NOT_FOUND, "approval not found");
-        }
-        return ApiResponse.success(Map.of("ok", true));
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.success(application.controlRun(sessionId, runId, request)));
     }
 }

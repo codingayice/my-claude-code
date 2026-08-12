@@ -2,11 +2,11 @@ package cn.ayice.veyra.runtime.agent;
 
 import cn.ayice.veyra.session.persistence.JournalMessageRecorder;
 import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
+import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 import cn.ayice.veyra.runtime.MemoryExtractionCoordinator;
 import cn.ayice.veyra.tool.ToolService;
 import cn.ayice.veyra.tool.ToolService.Authorization;
 import cn.ayice.veyra.tool.ToolService.Execution;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.ToolExecutionObserver;
 import cn.ayice.veyra.tool.ToolExecutionPolicy;
 import cn.ayice.veyra.tool.ToolResult;
@@ -20,7 +20,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -63,18 +65,34 @@ final class AgentToolCoordinator {
      * 处理当前模型响应中的全部工具请求，并在所有工具结束后返回更新后的消息上下文。
      */
     Result execute(List<ChatMessage> initialMessages, List<ToolExecutionRequest> requests) {
+        return execute(initialMessages, requests, Map.of());
+    }
+
+    /** 从持久化审批状态重新推进同一个工具批次。 */
+    Result resume(List<ChatMessage> initialMessages, List<ToolExecutionRequest> requests,
+                  Map<String, cn.ayice.veyra.session.PendingApprovalState> approvals) {
+        return execute(initialMessages, requests, approvals);
+    }
+
+    /** 计算完整授权批次，并在无未决审批时执行或拒绝每个 ToolUse。 */
+    private Result execute(List<ChatMessage> initialMessages, List<ToolExecutionRequest> requests,
+                           Map<String, cn.ayice.veyra.session.PendingApprovalState> approvals) {
         List<ChatMessage> messages = initialMessages;
         PermissionContext permissionContext = permissionContextStore.current();
         List<Authorization> approvedCalls = new ArrayList<>();
+        List<Authorization> rejectedCalls = new ArrayList<>();
+        List<String> pendingApprovalIds = new ArrayList<>();
+        Map<String, cn.ayice.veyra.session.PendingApprovalState> approvalsByTool = new LinkedHashMap<>();
+        approvals.values().forEach(approval -> approvalsByTool.put(approval.toolUseId(), approval));
 
         // 授权阶段保持模型请求顺序；拒绝结果也必须写回上下文，避免模型等待不存在的 tool result。
         for (ToolExecutionRequest request : requests) {
             permissionContext = permissionContextStore.current();
-            Authorization authorization = toolEngine.authorize(
-                    request,
-                    permissionContext,
-                    MAIN_TOOL_POLICY,
-                    new ToolExecutionObserver() {
+            cn.ayice.veyra.session.PendingApprovalState persisted = approvalsByTool.get(request.id());
+            Authorization authorization = persisted != null
+                    ? persisted.status() == cn.ayice.veyra.session.PendingApprovalState.ApprovalStatus.PENDING
+                    ? null : toolEngine.resolve(request, persisted.decision(), permissionContext)
+                    : toolEngine.authorize(request, permissionContext, MAIN_TOOL_POLICY, new ToolExecutionObserver() {
                         /**
                          * {@inheritDoc}
                          */
@@ -86,78 +104,91 @@ final class AgentToolCoordinator {
                             log.info("   [工具]{}:{}", toolRequest.name(), decision.kind());
                             events.toolStarted(toolRequest);
                         }
-                    }
-            );
+                    });
+            if (authorization == null) {
+                pendingApprovalIds.add(persisted.approvalId());
+                continue;
+            }
             permissionContext = authorization.context();
 
-            if (!authorization.allowed()) {
-                if (authorization.choice() == ToolExecutionConfirmation.Choice.DENY) {
-                    log.info("   [工具]用户拒绝了工具调用");
+            if (authorization.approvalRequired()) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("approvalId", authorization.approvalId());
+                payload.put("toolUseId", request.id());
+                payload.put("tool", request.name());
+                payload.put("arguments", request.arguments() == null ? "" : request.arguments());
+                payload.put("reason", authorization.decision().reason());
+                if (messageRecorder instanceof SessionJournalRecorder journal) {
+                    journal.recordDomainEvent(SessionJournalTypes.PERMISSION_REQUESTED, payload);
                 }
-                ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
-                        request,
-                        "<rejected>" + authorization.rejectionReason() + "</rejected>"
-                );
-                messageRecorder.record(resultMessage);
-                messages = append(messages, resultMessage);
-                events.toolRejected(request, authorization.rejectionReason());
+                events.approvalRequested(payload);
+                pendingApprovalIds.add(authorization.approvalId());
                 continue;
             }
 
-            if (authorization.decision().kind() == PermissionDecision.Kind.ASK) {
-                if (authorization.choice() == ToolExecutionConfirmation.Choice.ALLOW_FOR_SESSION) {
-                    log.info("   [工具]用户允许会话内该工具调用");
-                }
-                log.info("   [工具]用户允许了本次工具调用");
+            if (!authorization.allowed()) {
+                rejectedCalls.add(authorization);
+                continue;
             }
             approvedCalls.add(authorization);
         }
 
+        if (!pendingApprovalIds.isEmpty()) {
+            return new Result(messages, permissionContext, false, false, true, pendingApprovalIds);
+        }
+
         boolean todoWriteUsed = false;
         boolean memoryWritten = false;
+        Map<String, Authorization> rejectedById = new LinkedHashMap<>();
+        rejectedCalls.forEach(item -> rejectedById.put(item.request().id(), item));
+        Map<String, CompletableFuture<Execution>> executionsById = new LinkedHashMap<>();
         if (!approvedCalls.isEmpty()) {
             PermissionContext executionContext = permissionContext;
-            List<CompletableFuture<Execution>> futures = new ArrayList<>();
             // 同一轮中互不依赖的工具并行启动，以最长工具耗时作为整批耗时上界。
             for (Authorization authorization : approvedCalls) {
-                futures.add(CompletableFuture.supplyAsync(
+                executionsById.put(authorization.request().id(), CompletableFuture.supplyAsync(
                         () -> executePersisted(authorization, executionContext),
-                        toolExecutor
-                ));
-            }
-
-            // Future#get 构成轮次屏障：全部结果按请求顺序写回后，AgentLoop 才能进入下一轮模型调用。
-            for (int index = 0; index < futures.size(); index++) {
-                ToolExecutionRequest request = approvedCalls.get(index).request();
-                Execution execution;
-                try {
-                    execution = futures.get(index).get();
-                } catch (Exception error) {
-                    // 单个工具失败被规范化为 tool result，不中断同一批其他工具的结果收集。
-                    log.error("工具执行失败, toolUseId={}, name={}", request.id(), request.name(), error);
-                    ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
-                            request,
-                            "<error>工具执行失败: " + error.getMessage() + "</error>"
-                    );
-                    messageRecorder.record(resultMessage);
-                    messages = append(messages, resultMessage);
-                    events.toolFailed(request, error);
-                    continue;
-                }
-                ToolResult result = execution.result();
-                String content = execution.content();
-                ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(request, content);
-                messageRecorder.record(resultMessage);
-                messages = append(messages, resultMessage);
-                events.toolCompleted(request, result, content);
-                todoWriteUsed |= "TodoWrite".equals(request.name());
-                memoryWritten |= result.success()
-                        && memoryExtractionCoordinator != null
-                        && memoryExtractionCoordinator.isMemoryWriteRequest(request);
+                        toolExecutor));
             }
         }
 
-        return new Result(messages, permissionContext, todoWriteUsed, memoryWritten);
+        // 工具可以并行执行，但结果事实和模型上下文严格遵循声明顺序。
+        for (ToolExecutionRequest request : requests) {
+            Authorization rejected = rejectedById.get(request.id());
+            if (rejected != null) {
+                ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
+                        request, "<rejected>" + rejected.rejectionReason() + "</rejected>");
+                messageRecorder.record(resultMessage);
+                messages = append(messages, resultMessage);
+                events.toolRejected(request, rejected.rejectionReason());
+                continue;
+            }
+            CompletableFuture<Execution> future = executionsById.get(request.id());
+            if (future == null) continue;
+            Execution execution;
+            try {
+                execution = future.get();
+            } catch (Exception error) {
+                log.error("工具执行失败, toolUseId={}, name={}", request.id(), request.name(), error);
+                ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(
+                        request, "<error>工具执行失败: " + error.getMessage() + "</error>");
+                messageRecorder.record(resultMessage);
+                messages = append(messages, resultMessage);
+                events.toolFailed(request, error);
+                continue;
+            }
+            ToolResult result = execution.result();
+            String content = execution.content();
+            ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(request, content);
+            messageRecorder.record(resultMessage);
+            messages = append(messages, resultMessage);
+            events.toolCompleted(request, result, content);
+            todoWriteUsed |= "TodoWrite".equals(request.name());
+            memoryWritten |= result.success() && memoryExtractionCoordinator != null
+                    && memoryExtractionCoordinator.isMemoryWriteRequest(request);
+        }
+
+        return new Result(messages, permissionContext, todoWriteUsed, memoryWritten, false, List.of());
     }
 
     /**
@@ -186,7 +217,10 @@ final class AgentToolCoordinator {
             List<ChatMessage> messages,
             PermissionContext permissionContext,
             boolean todoWriteUsed,
-            boolean memoryWritten
+            boolean memoryWritten,
+            boolean suspended,
+            List<String> pendingApprovalIds
     ) {
+        Result { pendingApprovalIds = List.copyOf(pendingApprovalIds); }
     }
 }

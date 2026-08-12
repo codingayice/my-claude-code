@@ -16,6 +16,8 @@ import cn.ayice.veyra.runtime.RunMode;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import cn.ayice.veyra.runtime.control.RunControlRequest;
+import cn.ayice.veyra.runtime.control.RunControlResult;
 
 /**
  * HTTP 控制面访问活动 Veyra 运行时的唯一入口。
@@ -47,7 +49,7 @@ public class RuntimeHost {
      * 返回指定会话的当前设置；会话尚未激活时从 Journal 恢复。
      */
     public SessionState session(String sessionId) {
-        return runtimeSessions.getOrCreate(sessionId).state();
+        return activate(sessionId).state();
     }
 
     /**
@@ -130,7 +132,7 @@ public class RuntimeHost {
         }
         SessionRuntime acceptedSession = session;
         try {
-            acceptedSession.enqueue(() -> runs.execute(acceptedSession, command));
+            acceptedSession.enqueueRun(runId, () -> runs.execute(acceptedSession, command));
         } catch (RuntimeException enqueueFailure) {
             acceptedSession.failEnqueue();
             throw enqueueFailure;
@@ -216,14 +218,31 @@ public class RuntimeHost {
      * 返回指定会话尚未处理的工具审批请求。
      */
     public List<PendingApprovalState> pendingApprovals(String sessionId) {
-        return runtimeSessions.getOrCreate(sessionId).pendingApprovals();
+        return activate(sessionId).pendingApprovals();
     }
 
-    /**
-     * 将用户审批决定提交给指定会话中等待的工具调用。
-     */
-    public boolean resolveApproval(String sessionId, String approvalId, String decision) {
-        return runtimeSessions.getOrCreate(sessionId).resolveApproval(approvalId, decision);
+
+    /** 持久化统一 Run 控制请求，并在审批解决后重新调度同一个 runId。 */
+    public RunControlResult controlRun(String sessionId, String runId, RunControlRequest request) {
+        SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
+        RunControlResult result = session.control(runId, request);
+        if ("resume".equals(request.action()) && !Boolean.TRUE.equals(result.output().get("idempotent"))) {
+            session.enqueueRun(runId, () -> runs.execute(session,
+                    new RunCommand(runId, sessionId, "", RunMode.AGENT), true));
+        }
+        return result;
+    }
+
+    /** 激活持久化 Session 后补调度可推进但未进入队列的活动 Run。 */
+    private SessionRuntime activate(String sessionId) {
+        SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
+        cn.ayice.veyra.session.state.AgentState state = session.state().agent();
+        if (state.canAdvance() && state.run() != null) {
+            String runId = state.run().runId();
+            session.enqueueRun(runId, () -> runs.execute(session,
+                    new RunCommand(runId, sessionId, "", RunMode.AGENT), true));
+        }
+        return session;
     }
 
     /**

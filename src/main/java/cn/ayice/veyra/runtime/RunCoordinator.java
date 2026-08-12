@@ -17,22 +17,31 @@ public class RunCoordinator {
      * 绑定日志和事件上下文，执行目标策略，并在统一边界转换未处理异常。
      */
     public void execute(RunTarget target, RunCommand command) {
+        execute(target, command, false);
+    }
+
+    /** 推进新 Run 或恢复同一个已受理 Run。 */
+    public void execute(RunTarget target, RunCommand command, boolean resume) {
         // MDC 与事件流使用同一组标识，保证后端日志、SSE 和前端消息可以交叉定位。
         MDC.put("sessionId", command.sessionId());
         MDC.put("runId", command.runId());
         target.bindRun(command.runId());
-        target.emit("run.started", Map.of(
-                "input", command.input(),
-                "runId", command.runId(),
-                "mode", command.mode().name().toLowerCase()
-        ));
+        if (!resume) target.emit("run.started", Map.of(
+                "input", command.input(), "runId", command.runId(), "mode", command.mode().name().toLowerCase()));
 
         try {
             // RunMode 只在协调层分流，AgentLoop 和 ChatLoop 内部不再携带模式分支。
             if (command.mode() == RunMode.CHAT) {
                 target.executeChat(command.input());
             } else {
-                target.executeAgent(command.input());
+                cn.ayice.veyra.runtime.agent.AgentStepResult result = resume
+                        ? target.resumeAgent() : target.executeAgent(command.input());
+                if ("suspended".equals(result.status())) return;
+                if ("failed".equals(result.status())) {
+                    target.failRun(Map.of("reason", result.reason(), "content",
+                            String.valueOf(result.output().getOrDefault("content", ""))));
+                    return;
+                }
             }
             target.completeRun(Map.of("reason", "completed"));
         } catch (Exception e) {

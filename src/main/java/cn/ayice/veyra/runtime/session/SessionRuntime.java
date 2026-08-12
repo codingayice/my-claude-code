@@ -22,8 +22,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import cn.ayice.veyra.runtime.control.RunControlRequest;
+import cn.ayice.veyra.runtime.control.RunControlResult;
 
 /**
  * 单个会话全部可变运行状态的唯一所有者。
@@ -33,7 +36,6 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
 
     private final String sessionId;
     private final SessionEventStream events;
-    private final ToolApprovalQueue confirmation;
     private final AgentLoop agentLoop;
     private final ChatLoop chatLoop;
     private final PermissionContextStore permissionContextStore;
@@ -51,14 +53,13 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     public SessionRuntime(
             String sessionId,
             SessionEventStream events,
-            ToolApprovalQueue confirmation,
             AgentLoop agentLoop,
             ChatLoop chatLoop,
             PermissionContextStore permissionContextStore,
             SlashCommandDispatcher slashCommands,
             Executor executor
     ) {
-        this(sessionId, events, confirmation, agentLoop, chatLoop, permissionContextStore,
+        this(sessionId, events, agentLoop, chatLoop, permissionContextStore,
                 slashCommands, executor, null, null, "chat", "idle");
     }
 
@@ -68,7 +69,6 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     public SessionRuntime(
             String sessionId,
             SessionEventStream events,
-            ToolApprovalQueue confirmation,
             AgentLoop agentLoop,
             ChatLoop chatLoop,
             PermissionContextStore permissionContextStore,
@@ -81,7 +81,6 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     ) {
         this.sessionId = sessionId;
         this.events = events;
-        this.confirmation = confirmation;
         this.agentLoop = agentLoop;
         this.chatLoop = chatLoop;
         this.permissionContextStore = permissionContextStore;
@@ -113,6 +112,11 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
      */
     public CompletableFuture<Void> enqueue(Runnable run) {
         return runQueue.submit(run);
+    }
+
+    /** 按 runId 去重提交一次状态机推进。 */
+    public CompletableFuture<Void> enqueueRun(String runId, Runnable run) {
+        return runQueue.submit(runId, run);
     }
 
     /** 将运行期间的新输入加入默认追随队列。 */
@@ -270,21 +274,127 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
      * 返回等待当前用户处理的工具审批快照。
      */
     public List<PendingApprovalState> pendingApprovals() {
-        return confirmation.pendingApprovals().stream()
-                .map(item -> new PendingApprovalState(
-                        item.approvalId(),
-                        item.tool(),
-                        item.arguments(),
-                        item.reason()
-                ))
+        if (journalStore == null) return List.of();
+        return journalStore.recoveryAgentState(sessionId).approvals().values().stream()
+                .filter(item -> item.status() == PendingApprovalState.ApprovalStatus.PENDING)
                 .toList();
     }
 
-    /**
-     * 解析并提交一项工具审批决定。
-     */
-    public boolean resolveApproval(String approvalId, String decision) {
-        return confirmation.resolveApproval(approvalId, decision);
+
+    /** 在 Session 单写者边界内校验并持久化统一控制请求。 */
+    public synchronized RunControlResult control(String runId, RunControlRequest request) {
+        validateControlRequest(request);
+        String requestKey = controlRequestKey(runId, request);
+        Map<String, String> decisions = "resume".equals(request.action())
+                ? approvalDecisions(request.input()) : Map.of();
+        List<cn.ayice.veyra.session.persistence.SessionJournalEntry> duplicates = journalStore.read(sessionId).stream()
+                .filter(event -> request.commandId().equals(event.payload().get("commandId")))
+                .toList();
+        if (!duplicates.isEmpty()) {
+            if (duplicates.stream().anyMatch(event -> !requestKey.equals(event.payload().get("requestKey")))) {
+                throw new IllegalStateException("COMMAND_ID_REUSED");
+            }
+            if ("cancel".equals(request.action()) || duplicates.size() == decisions.size()) {
+                long revision = duplicates.stream().mapToLong(
+                        cn.ayice.veyra.session.persistence.SessionJournalEntry::sequence).max().orElseThrow();
+                return new RunControlResult("accepted", runId, revision, Map.of("idempotent", true));
+            }
+        }
+        cn.ayice.veyra.session.persistence.SessionIndex index = journalStore.index(sessionId);
+        if (duplicates.isEmpty() && request.expectedRevision() != index.appliedRevision()) {
+            throw new IllegalStateException("SESSION_REVISION_CONFLICT");
+        }
+        if (!index.runs().containsKey(runId)) throw new IllegalStateException("RUN_NOT_FOUND");
+        if (!runId.equals(index.activeRunId())) throw new IllegalStateException("RUN_NOT_ACTIVE");
+        if ("cancel".equals(request.action())) {
+            cn.ayice.veyra.session.persistence.SessionJournalEntry event = journalStore.append(
+                    sessionId, runId, SessionJournalTypes.RUN_CANCELLED,
+                    Map.of("reason", request.cause(), "commandId", request.commandId(), "requestKey", requestKey), true,
+                    request.expectedRevision(), request.commandId());
+            lastRunStatus = "cancelled";
+            if (journalRecorder != null) journalRecorder.releaseRun(runId);
+            events.emit("run.cancelled", Map.of("reason", request.cause(), "commandId", request.commandId()));
+            return new RunControlResult("accepted", runId, event.sequence(), Map.of());
+        }
+        cn.ayice.veyra.session.state.AgentState state = journalStore.recoveryAgentState(sessionId);
+        if (state.run() == null || state.run().phase() != cn.ayice.veyra.session.state.AgentPhase.WAITING_APPROVAL) {
+            throw new IllegalStateException("RUN_NOT_SUSPENDED");
+        }
+        for (String approvalId : decisions.keySet()) {
+            PendingApprovalState approval = state.approvals().get(approvalId);
+            if (approval == null) throw new IllegalStateException("APPROVAL_NOT_FOUND");
+            if (approval.status() == PendingApprovalState.ApprovalStatus.RESOLVED) {
+                boolean resolvedByCommand = duplicates.stream().anyMatch(event ->
+                        approvalId.equals(event.payload().get("approvalId")));
+                if (!resolvedByCommand) throw new IllegalStateException("APPROVAL_ALREADY_RESOLVED");
+            }
+        }
+        long revision = index.appliedRevision();
+        for (Map.Entry<String, String> decision : decisions.entrySet()) {
+            boolean alreadyWritten = duplicates.stream().anyMatch(event ->
+                    decision.getKey().equals(event.payload().get("approvalId")));
+            if (alreadyWritten) continue;
+            Map<String, Object> payload = Map.of(
+                    "approvalId", decision.getKey(), "decision", decision.getValue(),
+                    "commandId", request.commandId(), "requestKey", requestKey);
+            String eventId = decisions.size() == 1 ? request.commandId() : request.commandId() + ":" + decision.getKey();
+            cn.ayice.veyra.session.persistence.SessionJournalEntry event = journalStore.append(
+                    sessionId, runId, SessionJournalTypes.PERMISSION_RESOLVED, payload, true,
+                    revision, eventId);
+            revision = event.sequence();
+            events.emit("permission.resolved", payload);
+        }
+        return new RunControlResult("accepted", runId, revision,
+                Map.of("approvalIds", List.copyOf(decisions.keySet())));
+    }
+
+    /** 校验 action、cause、revision 和命令幂等键。 */
+    private static void validateControlRequest(RunControlRequest request) {
+        if (request == null || request.action() == null || request.cause() == null
+                || request.expectedRevision() == null || request.commandId() == null || request.commandId().isBlank()) {
+            throw new IllegalArgumentException("INVALID_RUN_CONTROL");
+        }
+        boolean supported = ("resume".equals(request.action()) && "approval".equals(request.cause()))
+                || ("cancel".equals(request.action()) && "user_requested".equals(request.cause()));
+        if (!supported) throw new IllegalArgumentException("UNSUPPORTED_RUN_CONTROL");
+    }
+
+    /** 解码互斥的单项或批量审批输入并校验决定值。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> approvalDecisions(Map<String, Object> input) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        Object batch = input.get("decisions");
+        boolean single = input.containsKey("approvalId") || input.containsKey("decision");
+        if (batch != null && single) throw new IllegalArgumentException("INVALID_RUN_CONTROL");
+        if (batch instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map)) throw new IllegalArgumentException("INVALID_RUN_CONTROL");
+                result.put(String.valueOf(map.get("approvalId")), String.valueOf(map.get("decision")));
+            }
+        } else if (single) {
+            result.put(String.valueOf(input.get("approvalId")), String.valueOf(input.get("decision")));
+        }
+        if (result.isEmpty() || result.entrySet().stream().anyMatch(entry -> entry.getKey().isBlank()
+                || !Set.of("allow_once", "allow_for_session", "deny").contains(entry.getValue()))) {
+            throw new IllegalArgumentException("INVALID_RUN_CONTROL");
+        }
+        return java.util.Collections.unmodifiableMap(result);
+    }
+
+    /** 为命令幂等比较生成与 Map 遍历顺序无关的规范文本。 */
+    private static String controlRequestKey(String runId, RunControlRequest request) {
+        return runId + "|" + request.action() + "|" + request.cause() + "|" + canonical(request.input());
+    }
+
+    /** 递归规范化 JSON 兼容值。 */
+    private static String canonical(Object value) {
+        if (value instanceof Map<?, ?> map) return map.entrySet().stream()
+                .sorted(java.util.Comparator.comparing(entry -> String.valueOf(entry.getKey())))
+                .map(entry -> entry.getKey() + ":" + canonical(entry.getValue()))
+                .collect(java.util.stream.Collectors.joining(",", "{", "}"));
+        if (value instanceof List<?> list) return list.stream().map(SessionRuntime::canonical)
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
+        return String.valueOf(value);
     }
 
     /**
@@ -346,8 +456,14 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
      * {@inheritDoc}
      */
     @Override
-    public void executeAgent(String input) {
-        agentLoop.process(input);
+    public cn.ayice.veyra.runtime.agent.AgentStepResult executeAgent(String input) {
+        return agentLoop.processStep(input);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public cn.ayice.veyra.runtime.agent.AgentStepResult resumeAgent() {
+        return agentLoop.resume(journalStore.recoveryAgentState(sessionId));
     }
 
     /**

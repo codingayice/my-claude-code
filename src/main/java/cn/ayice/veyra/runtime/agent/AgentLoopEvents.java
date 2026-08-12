@@ -91,6 +91,11 @@ class AgentLoopEvents {
         );
     }
 
+    /** 发布持久化审批已经进入等待状态的实时提示。 */
+    void approvalRequested(Map<String, Object> payload) {
+        sink.emit("permission.requested", payload);
+    }
+
     /**
      * 发布工具成功返回结果的事件。
      */

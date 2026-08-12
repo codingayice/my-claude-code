@@ -85,7 +85,7 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
     runId: "run-1",
     accepted: true,
   })
-  await client.decideApproval("session/1", "approval/1", "allow_once")
+  await client.controlRun("session/1", "run/1", "approval/1", "allow_once", 42, "cmd-1")
   assert.equal(
     (
       await client.updateSessionSettings("session/1", {
@@ -110,11 +110,14 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
   )
   assert.equal(
     requests[6].url,
-    `${AGENT_API_BASE}/sessions/session%2F1/approvals/approval%2F1/decision`
+    `${AGENT_API_BASE}/sessions/session%2F1/runs/run%2F1/control`
   )
   assert.equal(
     requests[6].init?.body,
-    JSON.stringify({ decision: "allow_once" })
+    JSON.stringify({
+      action: "resume", cause: "approval", input: { approvalId: "approval/1", decision: "allow_once" },
+      expectedRevision: 42, commandId: "cmd-1",
+    })
   )
   assert.equal(
     requests[7].url,

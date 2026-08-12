@@ -5,7 +5,6 @@ import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionDecision;
 import cn.ayice.veyra.tool.permission.PermissionMode;
 import cn.ayice.veyra.subagent.AgentProfile.PermissionPolicy;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.BaseTool;
 import cn.ayice.veyra.tool.ToolService.Authorization;
 import cn.ayice.veyra.tool.ToolService.Execution;
@@ -30,12 +29,9 @@ class ToolServiceTest {
     Path workspace;
 
     @Test
-    void appliesSessionApprovalBeforeExecutingTool() {
+    void returnsApprovalRequiredWithoutBlocking() {
         PermissionContextStore store = new PermissionContextStore(context(PermissionMode.ASK_EVERY_TIME));
-        RecordingConfirmation confirmation = new RecordingConfirmation(
-                ToolExecutionConfirmation.Choice.ALLOW_FOR_SESSION
-        );
-        ToolService engine = engine(new TestTool("bash", ToolResult.success("done")), confirmation, store);
+        ToolService engine = engine(new TestTool("bash", ToolResult.success("done")), store);
         List<String> lifecycle = new ArrayList<>();
         ToolExecutionRequest request = request("bash", "{\"command\":\"git status\"}");
 
@@ -45,17 +41,22 @@ class ToolServiceTest {
                 ToolExecutionPolicy.mainAgent(),
                 observer(lifecycle)
         );
-        Execution execution = engine.execute(
-                authorization,
-                authorization.context(),
-                ToolExecutionPolicy.mainAgent()
-        );
+        assertTrue(authorization.approvalRequired());
+        assertEquals(List.of("decided:ASK", "requested"), lifecycle);
+        assertTrue(store.current().rules().isEmpty());
+    }
+
+    @Test
+    void appliesSessionApprovalWhenPersistentDecisionIsResumed() {
+        PermissionContextStore store = new PermissionContextStore(context(PermissionMode.ASK_EVERY_TIME));
+        ToolService engine = engine(new TestTool("bash", ToolResult.success("done")), store);
+        Authorization authorization = engine.resolve(
+                request("bash", "{\"command\":\"git status\"}"), "allow_for_session", store.current());
 
         assertTrue(authorization.allowed());
-        assertEquals(List.of("decided:ASK", "requested", "resolved:ALLOW_FOR_SESSION"), lifecycle);
-        assertEquals(1, confirmation.calls);
         assertFalse(store.current().rules().isEmpty());
-        assertEquals("done", execution.content());
+        assertEquals("done", engine.execute(authorization, authorization.context(),
+                ToolExecutionPolicy.mainAgent()).content());
     }
 
     @Test
@@ -63,7 +64,7 @@ class ToolServiceTest {
         TestTool tool = new TestTool("Read", ToolResult.success(""));
         ToolExecutionRequest request = request("Read", "{}");
         PermissionContext context = context(PermissionMode.AUTO_APPROVE);
-        ToolService engine = engine(tool, null, new PermissionContextStore(context));
+        ToolService engine = engine(tool, new PermissionContextStore(context));
 
         Authorization mainAuthorization = engine.authorize(
                 request,
@@ -92,16 +93,11 @@ class ToolServiceTest {
     void returnsExistingRejectionTextWhenUserDeniesApproval() {
         ToolService engine = engine(
                 new TestTool("Write", ToolResult.success("unused")),
-                new RecordingConfirmation(ToolExecutionConfirmation.Choice.DENY),
                 new PermissionContextStore(context(PermissionMode.ASK_EVERY_TIME))
         );
 
-        Authorization authorization = engine.authorize(
-                request("Write", "{}"),
-                context(PermissionMode.ASK_EVERY_TIME),
-                ToolExecutionPolicy.mainAgent(),
-                ToolExecutionObserver.NOOP
-        );
+        Authorization authorization = engine.resolve(
+                request("Write", "{}"), "deny", context(PermissionMode.ASK_EVERY_TIME));
 
         assertFalse(authorization.allowed());
         assertEquals("用户拒绝了工具调用", authorization.rejectionReason());
@@ -109,11 +105,10 @@ class ToolServiceTest {
 
     private ToolService engine(
             BaseTool tool,
-            ToolExecutionConfirmation confirmation,
             PermissionContextStore store
     ) {
         ToolCatalog catalog = ToolCatalog.create(List.of(tool), new FileStateCache());
-        return new ToolService(catalog, confirmation, store);
+        return new ToolService(catalog, store);
     }
 
     private PermissionContext context(PermissionMode mode) {
@@ -150,29 +145,7 @@ class ToolServiceTest {
                 lifecycle.add("requested");
             }
 
-            @Override
-            public void permissionResolved(
-                    ToolExecutionRequest request,
-                    ToolExecutionConfirmation.Choice choice
-            ) {
-                lifecycle.add("resolved:" + choice);
-            }
         };
-    }
-
-    private static final class RecordingConfirmation extends ToolExecutionConfirmation {
-        private final Choice choice;
-        private int calls;
-
-        private RecordingConfirmation(Choice choice) {
-            this.choice = choice;
-        }
-
-        @Override
-        public Choice ask(ToolExecutionRequest request, String reason) {
-            calls++;
-            return choice;
-        }
     }
 
     private static final class TestTool extends BaseTool {

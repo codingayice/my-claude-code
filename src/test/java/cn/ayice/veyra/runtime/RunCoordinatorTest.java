@@ -60,11 +60,12 @@ class RunCoordinatorTest {
         }
 
         @Override
-        public void executeAgent(String input) {
+        public cn.ayice.veyra.runtime.agent.AgentStepResult executeAgent(String input) {
             if (fail) {
                 throw new IllegalStateException("boom");
             }
             executions.add("agent:" + input);
+            return cn.ayice.veyra.runtime.agent.AgentStepResult.completed("");
         }
 
         @Override

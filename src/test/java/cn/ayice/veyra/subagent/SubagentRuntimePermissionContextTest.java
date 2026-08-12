@@ -56,7 +56,6 @@ class SubagentRuntimePermissionContextTest {
                 new AppConfig(null),
                 null,
                 null,
-                null,
                 SubagentToolCatalogs.factory(null, java.util.concurrent.ForkJoinPool.commonPool())
         );
         Method method = SubagentRuntime.class.getDeclaredMethod(

@@ -8,3 +8,7 @@ export function shouldCloseProcessOnAssistantMessage(_hasToolRequests: boolean) 
 export function isActiveStreamingSegment(segment: { streaming?: boolean } | undefined) {
   return segment?.streaming === true
 }
+
+export function visibleAssistantThinking(runMode: 'chat' | 'agent', thinking: unknown) {
+  return runMode === 'chat' && typeof thinking === 'string' ? thinking : ''
+}

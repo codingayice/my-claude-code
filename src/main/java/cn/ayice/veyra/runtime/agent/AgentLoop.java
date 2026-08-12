@@ -19,7 +19,6 @@ import cn.ayice.veyra.runtime.model.ModelCallExecutor;
 import cn.ayice.veyra.llm.AIService;
 import cn.ayice.veyra.tool.ToolCatalog;
 import cn.ayice.veyra.tool.ToolService;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.permission.PermissionContext;
 import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.state.FileStateCache;
@@ -38,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import cn.ayice.veyra.session.state.AgentPhase;
+import cn.ayice.veyra.session.state.AgentState;
 import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
 import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 import java.util.concurrent.Executor;
@@ -82,7 +82,6 @@ public class AgentLoop {
             ToolCatalog tools,
             ContextService contextBuilder,
             BackgroundManager bgManager,
-            ToolExecutionConfirmation confirmation,
             PermissionContextStore permissionContextStore,
             TodoManager todoManager,
             CompactionConfig compactConfig,
@@ -114,7 +113,7 @@ public class AgentLoop {
                 fileStateCache::recentModifiedPaths
         );
         this.ai = ai;
-        ToolService toolEngine = new ToolService(tools, confirmation, permissionContextStore);
+        ToolService toolEngine = new ToolService(tools, permissionContextStore);
         this.permissionContextStore = permissionContextStore;
         this.permissionContext = permissionContextStore.current();
         this.todoManager = todoManager;
@@ -168,14 +167,52 @@ public class AgentLoop {
      * @return 最终助手回复或终止流程的错误文本
      */
     public synchronized String process(String input) {
-        events.userMessage(input);
+        AgentStepResult result = processStep(input);
+        return String.valueOf(result.output().getOrDefault("content", ""));
+    }
+
+    /** 从新用户输入开始推进，允许以 suspended 结果让出执行线程。 */
+    public synchronized AgentStepResult processStep(String input) {
+        return advance(input, null);
+    }
+
+    /** 从重建后的审批状态继续同一个 Run。 */
+    public synchronized AgentStepResult resume(AgentState restored) {
+        return advance(null, restored);
+    }
+
+    /** 新输入和持久化恢复共用的状态机推进循环。 */
+    private AgentStepResult advance(String input, AgentState restored) {
+        if (input != null) events.userMessage(input);
         permissionContext = permissionContextStore.current();
 
-        LoopState state = LoopState.initial(history, nextSequence, nextSequence)
-                .appendOriginal(UserMessage.from(input))
-                .markStable();
-        contextBuilder.prefetchMemory(input);
-        messageRecorder.record(UserMessage.from(input));
+        LoopState state = LoopState.initial(history, nextSequence, nextSequence);
+        if (input != null) {
+            state.appendOriginal(UserMessage.from(input)).markStable();
+            contextBuilder.prefetchMemory(input);
+            messageRecorder.record(UserMessage.from(input));
+        } else {
+            AiMessage pendingAssistant = lastPendingAssistant(state.chatMessages());
+            if (pendingAssistant == null) {
+                return AgentStepResult.failed("missing_tool_batch", "无法恢复待审批工具批次");
+            }
+            AgentToolCoordinator.Result resumed = toolCoordinator.resume(
+                    state.chatMessages(), pendingAssistant.toolExecutionRequests().stream()
+                            .filter(request -> {
+                                cn.ayice.veyra.session.state.ToolCallState tool = restored.toolCalls().get(request.id());
+                                return tool == null || tool.phase() != cn.ayice.veyra.session.state.ToolCallPhase.RESULT_RECORDED;
+                            }).toList(), restored.approvals());
+            if (resumed.suspended()) {
+                return AgentStepResult.suspended("approval", Map.of(
+                        "pendingApprovalIds", resumed.pendingApprovalIds()));
+            }
+            for (ChatMessage toolMessage : resumed.messages().subList(
+                    state.chatMessages().size(), resumed.messages().size())) {
+                state.appendOriginal(toolMessage);
+            }
+            permissionContext = resumed.permissionContext();
+            state.markStable();
+        }
         boolean promptTooLongCompactionAttempted = false;
         boolean mainAgentWroteMemory = false;
 
@@ -195,7 +232,7 @@ public class AgentLoop {
                 nextSequence = state.nextSequence();
                 String terminal = terminalMessage(state);
                 events.runCompleted(state.phase().name(), terminal);
-                return terminal;
+                return AgentStepResult.completed(terminal);
             }
 
             List<TaskNotification> notifications = drainTaskNotifications();
@@ -227,12 +264,12 @@ public class AgentLoop {
                 if ("COMPACTION_INSUFFICIENT".equals(preparationFailure.errorCode())) {
                     String terminal = "<error>上下文已接近模型上限，自动压缩未能将上下文降到安全范围。请先压缩上下文后再继续。</error>";
                     events.runCompleted("blocking_limit", terminal);
-                    return terminal;
+                    return AgentStepResult.failed("blocking_limit", terminal);
                 }
                 String terminal = "<error>上下文压缩失败，已阻止本次模型调用。错误码: "
                         + preparationFailure.errorCode() + "</error>";
                 events.runFailed("context_preparation_failed", terminal);
-                return terminal;
+                return AgentStepResult.failed("context_preparation_failed", terminal);
             }
             state = state.withMessages(prepared.messages())
                     .withCapacityState(prepared.capacityState())
@@ -350,6 +387,12 @@ public class AgentLoop {
                     beforeTools,
                     aiMessage.toolExecutionRequests()
             );
+            if (toolResult.suspended()) {
+                history = state.messages();
+                nextSequence = state.nextSequence();
+                return AgentStepResult.suspended("approval", Map.of(
+                        "pendingApprovalIds", toolResult.pendingApprovalIds()));
+            }
             if (toolResult.messages().size() < beforeTools.size()) {
                 throw new IllegalStateException("tool coordinator removed existing history");
             }
@@ -394,6 +437,16 @@ public class AgentLoop {
                     .withTurnCount(nextRound)
                     .withPhase(AgentPhase.READY_FOR_MODEL, "next_turn");
         }
+    }
+
+    /** 找到历史中最后一个仍等待工具结果的 Assistant 消息。 */
+    private static AiMessage lastPendingAssistant(List<ChatMessage> messages) {
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            ChatMessage message = messages.get(index);
+            if (message instanceof AiMessage assistant && assistant.hasToolExecutionRequests()) return assistant;
+            if (message instanceof UserMessage) break;
+        }
+        return null;
     }
 
     /** 从 Agent 状态机动作边界追加稳定领域事件。 */

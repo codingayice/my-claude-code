@@ -5,7 +5,6 @@ import cn.ayice.veyra.tool.permission.PermissionContextStore;
 import cn.ayice.veyra.tool.permission.PermissionDecision;
 import cn.ayice.veyra.tool.permission.PermissionUpdateSuggestions;
 import cn.ayice.veyra.tool.permission.PermissionContextStore.Update;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import cn.ayice.veyra.tool.BaseTool;
 import cn.ayice.veyra.tool.ToolResult;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -13,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 工具授权和执行生命周期的统一实现。
@@ -23,7 +23,6 @@ public class ToolService {
     private static final Logger log = LoggerFactory.getLogger(ToolService.class);
 
     private final ToolCatalog catalog;
-    private final ToolExecutionConfirmation confirmation;
     private final PermissionContextStore permissionContextStore;
 
     /**
@@ -31,11 +30,9 @@ public class ToolService {
      */
     public ToolService(
             ToolCatalog catalog,
-            ToolExecutionConfirmation confirmation,
             PermissionContextStore permissionContextStore
     ) {
         this.catalog = catalog;
-        this.confirmation = confirmation;
         this.permissionContextStore = permissionContextStore;
     }
 
@@ -56,36 +53,31 @@ public class ToolService {
             return rejected(request, tool, decision, context, decision.reason());
         }
         if (decision.kind() != PermissionDecision.Kind.ASK) {
-            return allowed(request, tool, decision, null, context);
+            return allowed(request, tool, decision, context);
         }
 
         observer.permissionRequested(request, decision);
         if (!policy.canAskPermission()) {
             return rejected(request, tool, decision, context, policy.deniedApprovalReason(decision));
         }
-        if (confirmation == null) {
-            return rejected(request, tool, decision, context, decision.reason());
-        }
+        return new Authorization("approval_required", decision, request, tool, context,
+                UUID.randomUUID().toString(), null);
+    }
 
-        // 审批调用在此阻塞，用户决定返回之前不会进入工具执行阶段。
-        ToolExecutionConfirmation.Choice choice = policy.includeDecisionReasonInApproval()
-                ? confirmation.ask(request, decision.reason())
-                : confirmation.ask(request);
-        observer.permissionResolved(request, choice);
-        if (choice == ToolExecutionConfirmation.Choice.DENY) {
-            return new Authorization(request, tool, decision, choice, context, "用户拒绝了工具调用");
+    /** 将持久化审批决定恢复为可执行或拒绝的授权描述。 */
+    public Authorization resolve(ToolExecutionRequest request, String decision, PermissionContext context) {
+        BaseTool tool = catalog == null ? null : catalog.find(request.name());
+        PermissionDecision original = PermissionDecision.ask("persisted approval");
+        if ("deny".equals(decision)) {
+            return rejected(request, tool, original, context, "用户拒绝了工具调用");
         }
-
-        PermissionContext nextContext = context;
-        if (choice == ToolExecutionConfirmation.Choice.ALLOW_FOR_SESSION) {
-            // 会话级允许既更新本次授权上下文，也写入 store 供后续工具调用复用。
+        PermissionContext next = context;
+        if ("allow_for_session".equals(decision)) {
             List<Update> updates = PermissionUpdateSuggestions.generateForSessionAllow(request, context);
-            nextContext = PermissionContextStore.applyTo(context, updates);
-            if (permissionContextStore != null) {
-                permissionContextStore.apply(updates);
-            }
+            next = PermissionContextStore.applyTo(context, updates);
+            if (permissionContextStore != null) permissionContextStore.apply(updates);
         }
-        return allowed(request, tool, decision, choice, nextContext);
+        return allowed(request, tool, original, next);
     }
 
     /**
@@ -129,10 +121,9 @@ public class ToolService {
             ToolExecutionRequest request,
             BaseTool tool,
             PermissionDecision decision,
-            ToolExecutionConfirmation.Choice choice,
             PermissionContext context
     ) {
-        return new Authorization(request, tool, decision, choice, context, null);
+        return new Authorization("allowed", decision, request, tool, context, null, null);
     }
 
     /**
@@ -145,26 +136,30 @@ public class ToolService {
             PermissionContext context,
             String reason
     ) {
-        return new Authorization(request, tool, decision, null, context, reason);
+        return new Authorization("denied", decision, request, tool, context, null, reason);
     }
 
     /**
      * 单个工具请求经过权限决策和审批后的不可变授权结果。
      */
     public record Authorization(
+            String status,
+            PermissionDecision decision,
             ToolExecutionRequest request,
             BaseTool tool,
-            PermissionDecision decision,
-            ToolExecutionConfirmation.Choice choice,
             PermissionContext context,
+            String approvalId,
             String rejectionReason
     ) {
         /**
          * 返回本次授权是否允许继续执行。
          */
         public boolean allowed() {
-            return rejectionReason == null;
+            return "allowed".equals(status);
         }
+
+        /** 返回是否需要先持久化用户审批。 */
+        public boolean approvalRequired() { return "approval_required".equals(status); }
     }
 
     /**

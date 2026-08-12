@@ -1,7 +1,6 @@
 package cn.ayice.veyra.tool;
 
 import cn.ayice.veyra.tool.permission.PermissionDecision;
-import cn.ayice.veyra.tool.ToolExecutionConfirmation;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 
 /**
@@ -24,9 +23,4 @@ public interface ToolExecutionObserver {
     default void permissionRequested(ToolExecutionRequest request, PermissionDecision decision) {
     }
 
-    /**
-     * 在用户提交审批选择后接收回调。
-     */
-    default void permissionResolved(ToolExecutionRequest request, ToolExecutionConfirmation.Choice choice) {
-    }
 }

@@ -5,8 +5,18 @@ package cn.ayice.veyra.session;
  */
 public record PendingApprovalState(
         String approvalId,
+        String toolUseId,
         String tool,
         String arguments,
-        String reason
+        String reason,
+        ApprovalStatus status,
+        String decision
 ) {
+    public PendingApprovalState {
+        status = status == null ? ApprovalStatus.PENDING : status;
+        decision = decision == null ? "" : decision;
+    }
+
+    /** 审批事实的持久化生命周期。 */
+    public enum ApprovalStatus { PENDING, RESOLVED }
 }

@@ -1,12 +1,12 @@
 package cn.ayice.veyra.control;
 
-import cn.ayice.veyra.control.dto.approval.ApprovalListResponse;
-import cn.ayice.veyra.control.dto.approval.PendingApprovalResponse;
 import cn.ayice.veyra.control.dto.command.ExecuteSlashCommandResponse;
 import cn.ayice.veyra.control.dto.command.SlashCommandListResponse;
 import cn.ayice.veyra.control.dto.command.SlashCommandOptionResponse;
 import cn.ayice.veyra.control.dto.run.CreateRunResponse;
 import cn.ayice.veyra.control.dto.run.CreateFollowupResponse;
+import cn.ayice.veyra.runtime.control.RunControlRequest;
+import cn.ayice.veyra.runtime.control.RunControlResult;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionRecordResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
@@ -172,26 +172,25 @@ public class AgentApplicationService {
         return new ExecuteSlashCommandResponse(result.reason(), result.content());
     }
 
-    /**
-     * 返回当前会话尚未处理的工具审批快照。
-     */
-    public ApprovalListResponse pendingApprovals(String sessionId) {
-        var items = runtimeHost.pendingApprovals(sessionId).stream()
-                .map(approval -> new PendingApprovalResponse(
-                        approval.approvalId(),
-                        approval.tool(),
-                        approval.arguments(),
-                        approval.reason()
-                ))
-                .toList();
-        return new ApprovalListResponse(items);
-    }
 
-    /**
-     * 将用户审批决定提交到指定会话。
-     */
-    public boolean decideApproval(String sessionId, String approvalId, String decision) {
-        return runtimeHost.resolveApproval(sessionId, approvalId, decision);
+    /** 分发统一 Run 控制并转换稳定错误协议。 */
+    public RunControlResult controlRun(String sessionId, String runId, RunControlRequest request) {
+        try {
+            return runtimeHost.controlRun(sessionId, runId, request);
+        } catch (IllegalArgumentException failure) {
+            if ("UNSUPPORTED_RUN_CONTROL".equals(failure.getMessage())) {
+                throw new AgentApiException(HttpStatus.UNPROCESSABLE_ENTITY,
+                        "UNSUPPORTED_RUN_CONTROL", failure.getMessage(), failure);
+            }
+            throw failure;
+        } catch (IllegalStateException failure) {
+            String code = failure.getMessage();
+            HttpStatus status = switch (code) {
+                case "RUN_NOT_FOUND", "APPROVAL_NOT_FOUND" -> HttpStatus.NOT_FOUND;
+                default -> HttpStatus.CONFLICT;
+            };
+            throw new AgentApiException(status, code, code, failure);
+        }
     }
 
     /**

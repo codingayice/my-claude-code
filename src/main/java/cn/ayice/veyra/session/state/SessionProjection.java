@@ -1,5 +1,7 @@
 package cn.ayice.veyra.session.state;
 
+import cn.ayice.veyra.session.PendingApprovalState;
+import cn.ayice.veyra.session.PendingApprovalState.ApprovalStatus;
 import cn.ayice.veyra.session.persistence.SessionJournalEntry;
 import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 
@@ -20,7 +22,7 @@ public final class SessionProjection {
     public AgentState reduceAgent(AgentState initial, List<SessionJournalEntry> events) {
         List<MessageState> messages = new ArrayList<>(initial.messages());
         Map<String, ToolCallState> tools = new LinkedHashMap<>(initial.toolCalls());
-        Map<String, Map<String, Object>> approvals = new LinkedHashMap<>(initial.approvals());
+        Map<String, PendingApprovalState> approvals = new LinkedHashMap<>(initial.approvals());
         List<Map<String, Object>> pending = new ArrayList<>(initial.pendingInputs());
         List<Map<String, Object>> todos = new ArrayList<>(initial.todos());
         Map<String, Map<String, Object>> tasks = new LinkedHashMap<>(initial.tasks());
@@ -63,15 +65,35 @@ public final class SessionProjection {
                         ToolCallPhase.EXECUTION_STARTED, null, "");
                 case SessionJournalTypes.TOOL_RESULT_RECORDED -> {
                     ToolOutcome outcome = outcome(data);
-                    updateTool(tools, data, ToolCallPhase.RESULT_RECORDED, outcome, text(data, "content", ""));
+                    updateTool(tools, data, ToolCallPhase.RESULT_RECORDED, outcome,
+                            text(data, "content", ""));
                     messages.add(new MessageState(event.eventId(), event.sequence(), event.runId(), MessageRole.TOOL,
                             text(data, "content", ""), "", false, List.of()));
                 }
-                case SessionJournalTypes.PERMISSION_REQUESTED -> approvals.put(
-                        text(data, "approvalId", event.eventId()), Map.copyOf(data));
-                case SessionJournalTypes.PERMISSION_RESOLVED, SessionJournalTypes.PERMISSION_INTERRUPTED -> {
+                case SessionJournalTypes.PERMISSION_REQUESTED -> {
+                    String approvalId = text(data, "approvalId", event.eventId());
+                    String toolUseId = text(data, "toolUseId", "");
+                    approvals.put(approvalId, new PendingApprovalState(
+                            approvalId, toolUseId, text(data, "tool", ""), text(data, "arguments", ""),
+                            text(data, "reason", ""), ApprovalStatus.PENDING, ""));
+                    updateApprovalTool(tools, toolUseId, approvalId, ToolCallPhase.WAITING_APPROVAL);
+                    if (run != null) run = withPhase(run, AgentPhase.WAITING_APPROVAL, "approval_required");
+                }
+                case SessionJournalTypes.PERMISSION_RESOLVED -> {
                     String id = text(data, "approvalId", "");
-                    if (!id.isBlank()) approvals.remove(id);
+                    PendingApprovalState previous = approvals.get(id);
+                    if (previous == null || previous.status() == ApprovalStatus.RESOLVED) break;
+                    String decision = text(data, "decision", "");
+                    approvals.put(id, new PendingApprovalState(
+                            previous.approvalId(), previous.toolUseId(), previous.tool(), previous.arguments(),
+                            previous.reason(), ApprovalStatus.RESOLVED, decision));
+                    updateApprovalTool(tools, previous.toolUseId(), id,
+                            "deny".equals(decision) ? ToolCallPhase.REJECTED : ToolCallPhase.AUTHORIZED);
+                    boolean pendingApproval = approvals.values().stream()
+                            .anyMatch(approval -> approval.status() == ApprovalStatus.PENDING);
+                    if (run != null) run = withPhase(run,
+                            pendingApproval ? AgentPhase.WAITING_APPROVAL : AgentPhase.EXECUTING_TOOLS,
+                            pendingApproval ? "approval_required" : "approvals_resolved");
                 }
                 case SessionJournalTypes.INPUT_QUEUED -> pending.add(Map.copyOf(data));
                 case SessionJournalTypes.INPUT_MODE_CHANGED -> replacePending(pending, data);
@@ -128,6 +150,20 @@ public final class SessionProjection {
                 previous == null ? "{}" : previous.arguments(), phase,
                 previous == null ? null : previous.approvalId(), outcome, content,
                 previous == null ? "UNKNOWN" : previous.recoveryPolicy()));
+    }
+
+    /** 保留 ToolUse 声明内容并只推进审批相关字段。 */
+    private static void updateApprovalTool(Map<String, ToolCallState> tools, String toolUseId,
+                                           String approvalId, ToolCallPhase phase) {
+        ToolCallState previous = tools.get(toolUseId);
+        if (toolUseId.isBlank() || previous == null) return;
+        tools.put(toolUseId, new ToolCallState(previous.toolUseId(), previous.name(), previous.arguments(), phase,
+                approvalId, previous.outcome(), previous.resultContent(), previous.recoveryPolicy()));
+    }
+
+    /** 保留 Run 计数和最终输出，只替换当前可推导阶段。 */
+    private static RunState withPhase(RunState run, AgentPhase phase, String reason) {
+        return new RunState(run.runId(), phase, run.turnCount(), run.modelFailureCount(), reason, run.finalResponse());
     }
 
     /** 将 Run 终态事件映射为领域阶段。 */

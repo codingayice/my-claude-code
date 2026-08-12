@@ -25,7 +25,6 @@ public final class SessionJournalTypes {
     public static final String TOOL_RESULT_RECORDED = "tool.execution.completed";
     public static final String PERMISSION_REQUESTED = "tool.approval.requested";
     public static final String PERMISSION_RESOLVED = "tool.approval.resolved";
-    public static final String PERMISSION_INTERRUPTED = "tool.approval.interrupted";
     public static final String TODO_UPDATED = "todo.list.replaced";
     public static final String INPUT_QUEUED = "input.queued";
     public static final String INPUT_MODE_CHANGED = "input.mode.changed";
