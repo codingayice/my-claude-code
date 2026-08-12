@@ -160,6 +160,18 @@ public class TodoManager {
         return new ArrayList<>(items);
     }
 
+    /** 从 SessionState 恢复 Todo 列表，不再次发布领域事件。 */
+    public synchronized void restore(List<Map<String, Object>> persisted) {
+        items.clear();
+        if (persisted == null) return;
+        for (Map<String, Object> item : persisted) {
+            String content = String.valueOf(item.getOrDefault("content", ""));
+            String status = String.valueOf(item.getOrDefault("status", "pending"));
+            String activeForm = item.get("activeForm") == null ? null : String.valueOf(item.get("activeForm"));
+            if (!content.isBlank()) items.add(new TodoItem(content, status, activeForm));
+        }
+    }
+
     /**
      * 转为前端可消费的 Map 列表
      */

@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
 
 /**
  * Owns pending user approvals for one active session and publishes their lifecycle events.
@@ -22,11 +23,18 @@ public class ToolApprovalQueue extends ToolExecutionConfirmation {
     private static final Logger log = LoggerFactory.getLogger(ToolApprovalQueue.class);
 
     private final AgentEventSink events;
+    private final SessionJournalRecorder journal;
     private final ConcurrentHashMap<String, CompletableFuture<Choice>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PendingApproval> approvals = new ConcurrentHashMap<>();
 
     public ToolApprovalQueue(AgentEventSink events) {
+        this(events, null);
+    }
+
+    /** 使用独立实时通知与稳定事实写入边界创建审批队列。 */
+    public ToolApprovalQueue(AgentEventSink events, SessionJournalRecorder journal) {
         this.events = events;
+        this.journal = journal;
     }
 
     /**
@@ -58,6 +66,9 @@ public class ToolApprovalQueue extends ToolExecutionConfirmation {
         payload.put("tool", request.name());
         payload.put("arguments", request.arguments() == null ? "" : request.arguments());
         payload.put("reason", reason == null ? "" : reason);
+        if (journal != null) {
+            journal.recordDomainEvent(cn.ayice.veyra.session.persistence.SessionJournalTypes.PERMISSION_REQUESTED, payload);
+        }
         events.emit("permission.requested", payload);
         try {
             return future.get();
@@ -86,10 +97,14 @@ public class ToolApprovalQueue extends ToolExecutionConfirmation {
             case "allow_once", "allow" -> Choice.ALLOW_ONCE;
             default -> Choice.DENY;
         };
-        events.emit("permission.resolved", Map.of(
+        Map<String, Object> payload = Map.of(
                 "approvalId", approvalId,
                 "decision", decision
-        ));
+        );
+        if (journal != null) {
+            journal.recordDomainEvent(cn.ayice.veyra.session.persistence.SessionJournalTypes.PERMISSION_RESOLVED, payload);
+        }
+        events.emit("permission.resolved", payload);
         future.complete(choice);
         return true;
     }

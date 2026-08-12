@@ -4,13 +4,11 @@ import cn.ayice.veyra.session.persistence.SessionRecord;
 import cn.ayice.veyra.session.persistence.SessionJournalEntry;
 import cn.ayice.veyra.session.persistence.SessionJournalStore;
 import cn.ayice.veyra.session.persistence.SessionJournalTypes;
-import cn.ayice.veyra.session.event.AgentEvent;
-import cn.ayice.veyra.session.recovery.SessionRecovery;
 
 import java.util.List;
 
 /**
- * Journal 查询入口，提供会话摘要、对话视图和稳定事件视图。
+ * Event Store 查询入口，提供会话摘要、检查点和转录视图。
  */
 public class SessionService {
 
@@ -27,21 +25,19 @@ public class SessionService {
         return journalStore.listSessions();
     }
 
+    /** 返回指定会话全部终态 Run 检查点。 */
+    public List<RunCheckpoint> checkpoints(String sessionId) {
+        return journalStore.checkpoints(sessionId);
+    }
+
     /**
      * 返回指定会话的全部持久化转录条目。
      */
     public List<TranscriptItem> transcript(String sessionId) {
-        return journalStore.read(sessionId).stream()
+        return journalStore.currentPathEvents(sessionId).stream()
                 .map(SessionService::toTranscriptItem)
                 .filter(java.util.Objects::nonNull)
                 .toList();
-    }
-
-    /**
-     * 返回可直接交给前端 reducer 的稳定会话事件；旧存储模式不提供该投影。
-     */
-    public List<AgentEvent> stableHistory(String sessionId) {
-        return SessionRecovery.stableEvents(journalStore.read(sessionId));
     }
 
     /** 将 Journal 消息事实投影为只读对话条目。 */

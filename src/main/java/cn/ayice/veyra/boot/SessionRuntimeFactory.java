@@ -146,14 +146,15 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
             boolean sessionPersisted
     ) {
         // 首先创建会话独占的事件、审批、权限和转录组件，避免可变状态跨会话共享。
-        SessionEventStream events = new SessionEventStream(sessionId);
+        long initialRevision = sessionPersisted ? journalStore.index(sessionId).appliedRevision() : 0L;
+        SessionEventStream events = new SessionEventStream(sessionId, initialRevision);
         SessionJournalRecorder journalRecorder = new SessionJournalRecorder(
                 sessionId,
                 journalStore,
                 sessionPersisted
         );
-        SessionAgentEventSink eventSink = new SessionAgentEventSink(events, journalRecorder);
-        ToolApprovalQueue confirmation = new ToolApprovalQueue(eventSink);
+        SessionAgentEventSink eventSink = new SessionAgentEventSink(events);
+        ToolApprovalQueue confirmation = new ToolApprovalQueue(eventSink, journalRecorder);
         PermissionContextStore permissionContextStore = new PermissionContextStore(
                 buildPermissionContext(restoredSettings)
         );
@@ -168,10 +169,16 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 permissionContextStore,
                 this::createSubagentToolCatalog
         );
-        BiConsumer<String, Map<String, Object>> taskEvents = eventSink::emit;
+        BiConsumer<String, Map<String, Object>> taskEvents = (type, payload) -> {
+            journalRecorder.recordDomainEvent(type, payload);
+            eventSink.emit(type, payload);
+        };
         SubagentService subagentService = new SubagentService(agentRuntime, taskExecutor, taskEvents);
         BackgroundManager backgroundManager = new BackgroundManager(ioExecutor, taskEvents);
-        TodoManager todoManager = new TodoManager(eventSink::emit);
+        TodoManager todoManager = new TodoManager((type, payload) -> {
+            journalRecorder.recordDomainEvent(type, payload);
+            eventSink.emit(type, payload);
+        });
         ToolCatalog toolCatalog = ToolCatalog.create(List.of(
                 new BashTool(),
                 new FileReadTool(fileStateCache),
@@ -256,7 +263,7 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 initialHistory,
                 recorder
         );
-        return new SessionRuntime(
+        SessionRuntime runtime = new SessionRuntime(
                 sessionId,
                 events,
                 confirmation,
@@ -271,9 +278,16 @@ public class SessionRuntimeFactory implements RuntimeSessionRegistry.Factory {
                 ),
                 runExecutor,
                 journalRecorder,
+                journalStore,
                 restoredSettings.runMode(),
                 lastRunStatus
         );
+        if (sessionPersisted) {
+            cn.ayice.veyra.session.state.AgentState restoredAgent = journalStore.recoveryAgentState(sessionId);
+            agentLoop.restorePendingInputs(restoredAgent.pendingInputs());
+            todoManager.restore(restoredAgent.todos());
+        }
+        return runtime;
     }
 
     /**

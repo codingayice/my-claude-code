@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +44,20 @@ class RuntimeSessionRegistryTest {
             assertEquals("第一条消息", records.get(0).title());
             assertEquals(SessionJournalTypes.SESSION_CREATED,
                     runtime.store().read(session.sessionId()).get(0).type());
+        }
+    }
+
+    @Test
+    void deletesIdleSessionButRejectsRunningSession() throws Exception {
+        TestRuntime runtime = runtime(config());
+        try (RuntimeSessionRegistry sessions = runtime.sessions()) {
+            SessionRuntime session = sessions.createSession();
+            assertTrue(session.acceptRun("run-1", "待删除任务", "agent"));
+
+            assertFalse(sessions.deleteSession(session.sessionId()));
+            session.failEnqueue();
+            assertTrue(sessions.deleteSession(session.sessionId()));
+            assertTrue(runtime.store().read(session.sessionId()).isEmpty());
         }
     }
 

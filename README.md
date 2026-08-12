@@ -13,7 +13,7 @@ My Claude Code 面向本地工作区，把大模型从一次性对话扩展为�
 | 运行时 | Java 17、Spring Boot 3.5 |
 | 模型接入 | LangChain4j 1.2、OpenAI-compatible Chat API |
 | 服务协议 | REST、Server-Sent Events（SSE） |
-| 状态与持久化 | 本地文件、JSONL Transcript、Markdown Memory Topic |
+| 状态与持久化 | Session Event Stream、Run Snapshot、可重建 SessionIndex、Markdown Memory Topic |
 | 桌面客户端 | React 19、TypeScript、Vite、Tauri 2 |
 | 测试与约束 | JUnit 5、ArchUnit、Node Test Runner |
 
@@ -24,7 +24,7 @@ My Claude Code 面向本地工作区，把大模型从一次性对话扩展为�
 - **安全的工具边界**：统一做输入校验、路径约束、权限判断和用户审批。
 - **长上下文续航**：在模型请求真正超出预算前，自动压缩可丢弃结果、复用会话摘要或生成新的摘要。
 - **跨会话记忆**：按用户和项目隔离长期记忆，只召回与当前输入相关且在预算内的内容。
-- **会话可观察与恢复**：Run 通过 `202 Accepted` 进入后台队列，过程通过 SSE 推送，转录写入 JSONL。
+- **会话可观察、恢复与时间旅行**：Run 通过 `202 Accepted` 进入后台队列，过程通过 SSE 推送；单一 Event Stream、结构化 Run Snapshot 和 Run 树支持崩溃恢复、回退与从历史检查点继续。
 - **客户端无关**：桌面端使用同一套本地 API，其他 CLI、Web 或自动化客户端也可以接入。
 
 ## 核心设计
@@ -49,7 +49,7 @@ flowchart TD
     Approval -- "否" --> Execute
     Execute --> Result["规范化工具结果"]
     Denied --> Result
-    Result --> Record["更新工作历史与 Transcript"]
+    Result --> Record["追加领域事件并更新 SessionState"]
     Record --> Prepare
     Final --> Events["发送响应与运行事件"]
 ```

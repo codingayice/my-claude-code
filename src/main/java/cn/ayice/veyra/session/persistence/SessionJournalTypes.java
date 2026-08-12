@@ -3,26 +3,35 @@ package cn.ayice.veyra.session.persistence;
 import java.util.Set;
 
 /**
- * 第一版 Session Journal 的稳定事件名称。
+ * Session Event Store 的稳定领域事件名称。
  */
 public final class SessionJournalTypes {
     public static final String SESSION_CREATED = "session.created";
-    public static final String SESSION_SETTINGS_UPDATED = "session.settings.updated";
-    public static final String RUN_STARTED = "run.started";
+    public static final String SESSION_SETTINGS_UPDATED = "session.settings.changed";
+    public static final String CHECKPOINT_RESTORED = "checkpoint.restored";
+    public static final String RUN_STARTED = "run.accepted";
     public static final String RUN_COMPLETED = "run.completed";
     public static final String RUN_FAILED = "run.failed";
     public static final String RUN_CANCELLED = "run.cancelled";
     public static final String RUN_INTERRUPTED = "run.interrupted";
-    public static final String USER_MESSAGE_RECORDED = "user.message.recorded";
-    public static final String ASSISTANT_MESSAGE_RECORDED = "assistant.message.recorded";
-    public static final String CONTEXT_SUMMARY_RECORDED = "context.summary.recorded";
-    public static final String TOOL_CALL_STARTED = "tool.call.started";
+    public static final String MODEL_CALL_STARTED = "model.call.started";
+    public static final String MODEL_CALL_FAILED = "model.call.failed";
+    public static final String MODEL_CALL_INTERRUPTED = "model.call.interrupted";
+    public static final String USER_MESSAGE_RECORDED = "user.message.added";
+    public static final String ASSISTANT_MESSAGE_RECORDED = "assistant.message.completed";
+    public static final String CONTEXT_SUMMARY_RECORDED = "context.summary.updated";
+    public static final String TOOL_CALL_STARTED = "tool.declared";
     public static final String TOOL_EXECUTION_STARTED = "tool.execution.started";
-    public static final String TOOL_RESULT_RECORDED = "tool.result.recorded";
-    public static final String PERMISSION_REQUESTED = "permission.requested";
-    public static final String PERMISSION_RESOLVED = "permission.resolved";
-    public static final String PERMISSION_INTERRUPTED = "permission.interrupted";
-    public static final String TODO_UPDATED = "todo.updated";
+    public static final String TOOL_RESULT_RECORDED = "tool.execution.completed";
+    public static final String PERMISSION_REQUESTED = "tool.approval.requested";
+    public static final String PERMISSION_RESOLVED = "tool.approval.resolved";
+    public static final String PERMISSION_INTERRUPTED = "tool.approval.interrupted";
+    public static final String TODO_UPDATED = "todo.list.replaced";
+    public static final String INPUT_QUEUED = "input.queued";
+    public static final String INPUT_MODE_CHANGED = "input.mode.changed";
+    public static final String INPUT_APPLIED = "input.applied";
+    public static final String INPUT_CANCELLED = "input.cancelled";
+    public static final String INPUT_FAILED = "input.failed";
     public static final String TASK_STARTED = "task.started";
     public static final String TASK_STEP_STARTED = "task.step.started";
     public static final String TASK_ASSISTANT_MESSAGE_COMPLETED = "task.assistant.message.completed";

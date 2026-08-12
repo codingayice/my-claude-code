@@ -2,7 +2,6 @@ package cn.ayice.veyra.session.recovery;
 
 import cn.ayice.veyra.compaction.SessionSummaryState;
 import cn.ayice.veyra.session.SessionSettings;
-import cn.ayice.veyra.session.event.AgentEvent;
 import cn.ayice.veyra.session.persistence.JournalMessageCodec;
 import cn.ayice.veyra.session.persistence.SessionJournalEntry;
 import cn.ayice.veyra.session.persistence.SessionJournalStore;
@@ -11,13 +10,20 @@ import dev.langchain4j.data.message.ChatMessage;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import cn.ayice.veyra.session.state.AgentState;
+import cn.ayice.veyra.session.state.MessageRole;
+import cn.ayice.veyra.session.state.MessageState;
+import cn.ayice.veyra.session.state.ToolCallState;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
 
 /**
  * 将 Session Journal 收敛为稳定终态并重建新进程所需的恢复投影。
@@ -49,7 +55,7 @@ public final class SessionRecovery {
     public RecoveryResult recover(String sessionId) {
         List<SessionJournalEntry> entries = new ArrayList<>(store.read(sessionId));
         if (entries.isEmpty()) {
-            return new RecoveryResult(List.of(), List.of(), Optional.empty(), defaults, "idle", false);
+            return new RecoveryResult(List.of(), Optional.empty(), defaults, "idle", false, AgentState.empty());
         }
 
         Map<String, ToolUse> toolUses = new LinkedHashMap<>();
@@ -61,6 +67,8 @@ public final class SessionRecovery {
         Set<String> resolvedApprovals = new HashSet<>();
         Map<String, String> openRuns = new LinkedHashMap<>();
         Set<String> terminalRuns = new HashSet<>();
+        Map<String, String> openModelCalls = new LinkedHashMap<>();
+        Set<String> closedModelCalls = new HashSet<>();
 
         for (SessionJournalEntry entry : entries) {
             switch (entry.type()) {
@@ -69,8 +77,17 @@ public final class SessionRecovery {
                      SessionJournalTypes.RUN_FAILED,
                      SessionJournalTypes.RUN_CANCELLED,
                      SessionJournalTypes.RUN_INTERRUPTED -> terminalRuns.add(entry.runId());
-                case SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED ->
-                        collectToolUses(entry, toolUses);
+                case SessionJournalTypes.MODEL_CALL_STARTED ->
+                        openModelCalls.put(text(entry.payload(), "modelCallId"), entry.runId());
+                case SessionJournalTypes.MODEL_CALL_FAILED, SessionJournalTypes.MODEL_CALL_INTERRUPTED ->
+                        closedModelCalls.add(text(entry.payload(), "modelCallId"));
+                case SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED -> {
+                    collectToolUses(entry, toolUses);
+                    openModelCalls.entrySet().stream()
+                            .filter(call -> java.util.Objects.equals(call.getValue(), entry.runId()))
+                            .map(Map.Entry::getKey)
+                            .forEach(closedModelCalls::add);
+                }
                 case SessionJournalTypes.TOOL_EXECUTION_STARTED ->
                         startedTools.add(text(entry.payload(), "toolUseId"));
                 case SessionJournalTypes.TOOL_RESULT_RECORDED ->
@@ -91,6 +108,14 @@ public final class SessionRecovery {
                         resolvedApprovals.add(text(entry.payload(), "approvalId"));
                 default -> {
                 }
+            }
+        }
+
+        for (Map.Entry<String, String> modelCall : openModelCalls.entrySet()) {
+            if (!modelCall.getKey().isBlank() && !closedModelCalls.contains(modelCall.getKey())) {
+                entries.add(store.append(sessionId, modelCall.getValue(),
+                        SessionJournalTypes.MODEL_CALL_INTERRUPTED,
+                        Map.of("modelCallId", modelCall.getKey(), "reason", "process_terminated"), true));
             }
         }
 
@@ -162,23 +187,26 @@ public final class SessionRecovery {
             entries.add(repair);
         }
 
-        return project(entries, defaults);
+        return project(store.recoveryEvents(sessionId), defaults, store.recoveryAgentState(sessionId));
+    }
+
+    /** 从指定终态 Run 的不可变路径状态恢复，不改变当前指针。 */
+    public RecoveryResult recoverAt(String sessionId, String runId) {
+        return project(store.recoveryEventsAt(sessionId, runId), defaults, store.recoveryAgentStateAt(sessionId, runId));
     }
 
     /** 从最终稳定事实一次性构建 Runtime 和 UI 所需的只读投影。 */
-    private static RecoveryResult project(List<SessionJournalEntry> entries, SessionSettings defaults) {
-        List<ChatMessage> history = new ArrayList<>();
-        List<AgentEvent> stableEvents = new ArrayList<>();
+    private static RecoveryResult project(
+            List<SessionJournalEntry> entries,
+            SessionSettings defaults,
+            AgentState agentState
+    ) {
+        List<ChatMessage> history = new ArrayList<>(decodeHistory(agentState));
         SessionSummaryState.SummarySnapshot sessionSummary = null;
         SessionSettings settings = defaults;
         String lastRunStatus = "idle";
-        Map<String, String> runModes = new HashMap<>();
 
         for (SessionJournalEntry entry : entries) {
-            ChatMessage message = JournalMessageCodec.decode(entry);
-            if (message != null) {
-                history.add(message);
-            }
             if (SessionJournalTypes.SESSION_CREATED.equals(entry.type())
                     || SessionJournalTypes.SESSION_SETTINGS_UPDATED.equals(entry.type())) {
                 String workingDir = text(entry.payload(), "workingDir");
@@ -203,97 +231,43 @@ public final class SessionRecovery {
             }
             if (SessionJournalTypes.RUN_STARTED.equals(entry.type())) {
                 lastRunStatus = "running";
-                runModes.put(entry.runId(), text(entry.payload(), "mode"));
             } else if (SessionJournalTypes.RUN_TERMINALS.contains(entry.type())) {
                 lastRunStatus = entry.type().substring("run.".length());
             }
-            projectStableEvent(entry, runModes.get(entry.runId())).ifPresent(stableEvents::add);
         }
         return new RecoveryResult(
                 List.copyOf(history),
-                List.copyOf(stableEvents),
                 Optional.ofNullable(sessionSummary),
                 settings,
                 lastRunStatus,
-                true
+                true,
+                agentState
         );
     }
 
-    /**
-     * 将当前稳定 Journal 投影为桌面端冷加载事件，不执行任何修复写回。
-     */
-    public static List<AgentEvent> stableEvents(List<SessionJournalEntry> entries) {
-        List<AgentEvent> events = new ArrayList<>();
-        Map<String, String> runModes = new HashMap<>();
-        for (SessionJournalEntry entry : entries) {
-            if (SessionJournalTypes.RUN_STARTED.equals(entry.type())) {
-                runModes.put(entry.runId(), text(entry.payload(), "mode"));
-            }
-            projectStableEvent(entry, runModes.get(entry.runId())).ifPresent(events::add);
-        }
-        return List.copyOf(events);
-    }
-
-    /** 把用户可见稳定事实映射为冷加载 AgentEvent。 */
-    private static Optional<AgentEvent> projectStableEvent(SessionJournalEntry entry, String runMode) {
-        if (SessionJournalTypes.USER_MESSAGE_RECORDED.equals(entry.type())
-                && Boolean.FALSE.equals(entry.payload().get("visible"))) {
-            return Optional.empty();
-        }
-        String eventType = switch (entry.type()) {
-            case SessionJournalTypes.USER_MESSAGE_RECORDED -> "user.message";
-            case SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED -> "assistant.message.completed";
-            case SessionJournalTypes.TOOL_RESULT_RECORDED -> switch (text(entry.payload(), "outcome")) {
-                case "REJECTED", "NOT_EXECUTED" -> "tool.call.rejected";
-                case "COMPLETED" -> "tool.call.completed";
-                default -> "tool.call.failed";
-            };
-            case SessionJournalTypes.TOOL_CALL_STARTED,
-                 SessionJournalTypes.PERMISSION_REQUESTED,
-                 SessionJournalTypes.PERMISSION_RESOLVED,
-                 SessionJournalTypes.PERMISSION_INTERRUPTED,
-                 SessionJournalTypes.TODO_UPDATED,
-                 SessionJournalTypes.TASK_STARTED,
-                 SessionJournalTypes.TASK_STEP_STARTED,
-                 SessionJournalTypes.TASK_ASSISTANT_MESSAGE_COMPLETED,
-                 SessionJournalTypes.TASK_TOOL_CALL_STARTED,
-                 SessionJournalTypes.TASK_TOOL_CALL_COMPLETED,
-                 SessionJournalTypes.TASK_TOOL_CALL_REJECTED,
-                 SessionJournalTypes.TASK_PERMISSION_REQUESTED,
-                 SessionJournalTypes.TASK_PERMISSION_RESOLVED,
-                 SessionJournalTypes.TASK_COMPLETED,
-                 SessionJournalTypes.TASK_FAILED,
-                 SessionJournalTypes.TASK_KILLED,
-                 SessionJournalTypes.TASK_INTERRUPTED -> entry.type();
-            case SessionJournalTypes.RUN_STARTED,
-                 SessionJournalTypes.RUN_COMPLETED,
-                 SessionJournalTypes.RUN_FAILED,
-                 SessionJournalTypes.RUN_CANCELLED,
-                 SessionJournalTypes.RUN_INTERRUPTED -> entry.type();
-            default -> null;
-        };
-        if (eventType == null) {
-            return Optional.empty();
-        }
-        Map<String, Object> payload = entry.payload();
-        if (SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED.equals(entry.type())) {
-            payload = new LinkedHashMap<>(entry.payload());
-            Object calls = entry.payload().get("toolCalls");
-            payload.put("hasToolRequests", calls instanceof List<?> list && !list.isEmpty());
-            // Agent 实时事件不会暴露模型 thinking；冷恢复必须保持相同的 UI 投影。
-            // 原始 thinking 仍保留在 Journal 中，Chat 模式恢复时也继续展示。
-            if ("agent".equalsIgnoreCase(runMode)) {
-                payload.remove("thinking");
+    /** 将结构化 AgentState 恢复为 LangChain4j 模型历史。 */
+    private static List<ChatMessage> decodeHistory(AgentState state) {
+        List<ChatMessage> result = new ArrayList<>();
+        for (MessageState message : state.messages()) {
+            if (message.role() == MessageRole.USER) {
+                result.add(UserMessage.from(message.text()));
+            } else if (message.role() == MessageRole.ASSISTANT) {
+                List<ToolExecutionRequest> calls = message.toolCalls().stream()
+                        .map(tool -> ToolExecutionRequest.builder()
+                                .id(tool.toolUseId()).name(tool.name()).arguments(tool.arguments()).build())
+                        .toList();
+                result.add(AiMessage.builder().text(message.text()).thinking(message.thinking())
+                        .toolExecutionRequests(calls).build());
+            } else if (message.role() == MessageRole.TOOL) {
+                ToolCallState tool = state.toolCalls().values().stream()
+                        .filter(candidate -> candidate.resultContent().equals(message.text()))
+                        .findFirst().orElse(null);
+                if (tool != null) {
+                    result.add(ToolExecutionResultMessage.from(tool.toolUseId(), tool.name(), message.text()));
+                }
             }
         }
-        return Optional.of(new AgentEvent(
-                entry.sequence(),
-                entry.sessionId(),
-                entry.runId(),
-                eventType,
-                entry.timestampMs(),
-                payload
-        ));
+        return List.copyOf(result);
     }
 
     /** 收集完整 Assistant payload 中声明的 ToolUse。 */
@@ -345,16 +319,16 @@ public final class SessionRecovery {
     /** 新 Session Runtime 和冷加载 UI 共用的不可变恢复结果。 */
     public record RecoveryResult(
             List<ChatMessage> agentHistory,
-            List<AgentEvent> stableEvents,
             Optional<SessionSummaryState.SummarySnapshot> sessionSummary,
             SessionSettings settings,
             String lastRunStatus,
-            boolean persisted
+            boolean persisted,
+            AgentState agentState
     ) {
         public RecoveryResult {
             agentHistory = List.copyOf(agentHistory);
-            stableEvents = List.copyOf(stableEvents);
             sessionSummary = sessionSummary == null ? Optional.empty() : sessionSummary;
+            agentState = agentState == null ? AgentState.empty() : agentState;
         }
     }
 }

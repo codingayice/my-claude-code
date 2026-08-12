@@ -57,6 +57,14 @@ public class RuntimeHost {
         return runtimeSessions.getOrCreate(sessionId).updateSettings(workingDir, permissionMode, runMode);
     }
 
+    /** 使用 expectedRevision 更新会话设置。 */
+    public SessionState updateSettings(
+            String sessionId, String workingDir, String permissionMode, String runMode, Long expectedRevision
+    ) {
+        return runtimeSessions.getOrCreate(sessionId)
+                .updateSettings(workingDir, permissionMode, runMode, expectedRevision);
+    }
+
     /**
      * 返回持久化会话摘要列表。
      */
@@ -72,6 +80,11 @@ public class RuntimeHost {
                 .toList();
     }
 
+    /** 删除空闲会话的运行时状态和持久化 Journal。 */
+    public boolean deleteSession(String sessionId) {
+        return runtimeSessions.deleteSession(sessionId);
+    }
+
     /**
      * 返回指定会话的持久化转录条目。
      */
@@ -82,18 +95,15 @@ public class RuntimeHost {
     }
 
     /**
-     * 完成惰性恢复后返回 Journal 投影的稳定 UI 事件。
-     */
-    public List<AgentEvent> stableHistory(String sessionId) {
-        runtimeSessions.getOrCreate(sessionId);
-        return persistedSessions.stableHistory(sessionId);
-    }
-
-    /**
      * 校验用户输入并将一次 Run 提交到对应会话的串行队列。
      * <p>方法只负责受理，实际 Agent/Chat 执行在线程池中异步进行。</p>
      */
     public RunSubmission submitRun(String sessionId, String input, String mode) {
+        return submitRun(sessionId, input, mode, null);
+    }
+
+    /** 从当前位置或一个历史终态 Run 创建新 Run。 */
+    public RunSubmission submitRun(String sessionId, String input, String mode, String parentRunId) {
         SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
         String nextInput = input == null ? "" : input.trim();
         if (nextInput.isEmpty()) {
@@ -103,16 +113,40 @@ public class RuntimeHost {
         // 先生成稳定 runId 再入队，使 HTTP 202 响应和后续 SSE 事件可以关联同一次运行。
         String runId = UUID.randomUUID().toString();
         RunCommand command = new RunCommand(runId, sessionId, nextInput, RunMode.from(mode));
-        if (!session.acceptRun(runId, nextInput, command.mode().name().toLowerCase())) {
+        SessionRuntime target = session;
+        if (parentRunId != null && !parentRunId.isBlank()
+                && !parentRunId.equals(session.state().currentRunId())) {
+            target = runtimeSessions.runtimeFromCheckpoint(sessionId, parentRunId);
+        }
+        if (!target.acceptRun(runId, nextInput, command.mode().name().toLowerCase(), parentRunId)) {
+            if (target != session) {
+                target.close();
+            }
             return RunSubmission.rejected();
         }
+        if (target != session) {
+            runtimeSessions.replace(sessionId, session, target);
+            session = target;
+        }
+        SessionRuntime acceptedSession = session;
         try {
-            session.enqueue(() -> runs.execute(session, command));
+            acceptedSession.enqueue(() -> runs.execute(acceptedSession, command));
         } catch (RuntimeException enqueueFailure) {
-            session.failEnqueue();
+            acceptedSession.failEnqueue();
             throw enqueueFailure;
         }
         return RunSubmission.accepted(runId);
+    }
+
+    /** 返回当前 Session 全部终态 Run 检查点。 */
+    public List<cn.ayice.veyra.session.RunCheckpoint> checkpoints(String sessionId) {
+        runtimeSessions.getOrCreate(sessionId);
+        return persistedSessions.checkpoints(sessionId);
+    }
+
+    /** 回退并持久化当前 Run 指针。 */
+    public SessionState restoreCheckpoint(String sessionId, String runId, long expectedRevision) {
+        return runtimeSessions.restoreCheckpoint(sessionId, runId, expectedRevision).state();
     }
 
     /**
@@ -126,7 +160,7 @@ public class RuntimeHost {
         }
 
         PendingInputQueue.Message pending = session.addFollowup(nextInput, RunMode.from(mode));
-        session.emit("input.queued", java.util.Map.of(
+        session.emitStable("input.queued", java.util.Map.of(
                 "messageId", pending.id(),
                 "text", pending.text(),
                 "mode", "followup",
@@ -140,13 +174,13 @@ public class RuntimeHost {
             String runId = UUID.randomUUID().toString();
             RunCommand command = new RunCommand(runId, sessionId, claimed.text(), claimed.mode());
             if (!session.acceptRun(runId, claimed.text(), claimed.mode().name().toLowerCase())) {
-                session.emit("input.failed", java.util.Map.of(
+                session.emitStable("input.failed", java.util.Map.of(
                         "messageId", claimed.id(),
                         "reason", "session_still_running"
                 ));
                 return;
             }
-            session.emit("input.applied", java.util.Map.of(
+            session.emitStable("input.applied", java.util.Map.of(
                     "messageId", claimed.id(),
                     "mode", "followup"
             ));
@@ -160,7 +194,7 @@ public class RuntimeHost {
         SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
         boolean moved = session.steerPendingInput(messageId);
         if (moved) {
-            session.emit("input.mode.changed", java.util.Map.of(
+            session.emitStable("input.mode.changed", java.util.Map.of(
                     "messageId", messageId,
                     "mode", "steer"
             ));
@@ -173,7 +207,7 @@ public class RuntimeHost {
         SessionRuntime session = runtimeSessions.getOrCreate(sessionId);
         boolean cancelled = session.cancelPendingInput(messageId);
         if (cancelled) {
-            session.emit("input.cancelled", java.util.Map.of("messageId", messageId));
+            session.emitStable("input.cancelled", java.util.Map.of("messageId", messageId));
         }
         return cancelled;
     }

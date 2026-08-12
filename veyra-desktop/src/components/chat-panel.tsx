@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, CheckCircle2, CornerUpRight, Copy, Ellipsis, FileText, FolderOpen, ListRestart, Pencil, ShieldCheck, Trash2, XCircle } from 'lucide-react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Check, CheckCircle2, CornerUpRight, Copy, Ellipsis, FileText, FolderOpen, GitBranch, ListRestart, Pencil, ShieldCheck, Trash2, XCircle } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai/agent'
@@ -80,6 +80,11 @@ import {
 } from '@/components/ui/select'
 import { TextShimmer } from '@/components/agent-elements/text-shimmer'
 import {
+  Checkpoint,
+  CheckpointIcon,
+  CheckpointTrigger,
+} from '@/components/ai-elements/checkpoint'
+import {
   Context,
   ContextContent,
   ContextContentHeader,
@@ -97,6 +102,9 @@ import {
   agentEventUrl,
   type AgentApprovalDecision,
   type AgentPermissionMode,
+  type AgentCheckpoint,
+  type AgentSessionResponse,
+  type AgentToolCallState,
   type AgentRunMode,
   type AgentStableEvent,
 } from '@/lib/agent-api'
@@ -241,6 +249,99 @@ type PendingInputView = {
 }
 
 type AgentEvent = AgentStableEvent
+
+function toolView(tool: AgentToolCallState): ToolEntry {
+  const state: ToolState = tool.phase === 'WAITING_APPROVAL'
+    ? 'approval-requested'
+    : tool.phase !== 'RESULT_RECORDED'
+      ? 'input-available'
+      : tool.outcome === 'COMPLETED'
+        ? 'output-available'
+        : tool.outcome === 'REJECTED' || tool.outcome === 'NOT_EXECUTED'
+          ? 'output-denied'
+          : 'output-error'
+  return {
+    id: tool.toolUseId,
+    name: tool.name,
+    state,
+    input: normalizeToolValue(tool.arguments),
+    output: state === 'output-available' ? normalizeToolValue(tool.resultContent) : undefined,
+    errorText: state === 'output-error' || state === 'output-denied' ? tool.resultContent : undefined,
+  }
+}
+
+/** 完整 SessionView 的唯一冷加载适配器；不重放持久化 UI 事件。 */
+function chatEntriesFromSessionView(session: AgentSessionResponse): ChatEntry[] {
+  const entries: ChatEntry[] = []
+  for (const message of session.agent.messages) {
+    if (message.role === 'USER') {
+      if (message.visible) entries.push({
+        id: message.messageId,
+        role: 'user',
+        runId: message.runId ?? undefined,
+        content: message.text,
+        final: true,
+      })
+      continue
+    }
+    if (message.role !== 'ASSISTANT') continue
+    const segments: AssistantSegment[] = []
+    if (message.thinking) segments.push({
+      id: `${message.messageId}-reasoning`, type: 'reasoning', content: message.thinking, streaming: false,
+    })
+    if (message.text) segments.push({
+      id: `${message.messageId}-text`, type: 'text', content: message.text, streaming: false,
+    })
+    if (message.toolCalls.length > 0) segments.push({
+      id: `${message.messageId}-tools`,
+      type: 'process',
+      status: message.toolCalls.every(tool => tool.phase === 'RESULT_RECORDED') ? 'completed' : 'running',
+      startedAtMs: message.sourceRevision,
+      tools: message.toolCalls.map(tool => toolView(session.agent.toolCalls[tool.toolUseId] ?? tool)),
+    })
+    entries.push({
+      id: message.messageId,
+      role: 'assistant',
+      runId: message.runId ?? undefined,
+      streaming: session.activeRunId === message.runId,
+      final: session.activeRunId !== message.runId,
+      segments,
+    })
+  }
+  for (const [approvalId, approval] of Object.entries(session.agent.approvals)) {
+    const runId = typeof approval.runId === 'string' ? approval.runId : session.activeRunId ?? undefined
+    const index = findLastIndex(entries, entry => entry.role === 'assistant' && (!runId || entry.runId === runId))
+    if (index < 0) continue
+    entries[index] = {
+      ...entries[index],
+      segments: [...(entries[index].segments ?? []), {
+        id: `approval-${approvalId}`,
+        type: 'approval',
+        approvalId,
+        toolName: typeof approval.tool === 'string' ? approval.tool : '工具',
+        reason: typeof approval.reason === 'string' ? approval.reason : undefined,
+        input: approval.arguments,
+      }],
+    }
+  }
+  const todos = session.agent.todos.flatMap(item => {
+    const content = typeof item.content === 'string' ? item.content : ''
+    const status = item.status
+    return content && (status === 'pending' || status === 'in_progress' || status === 'completed')
+      ? [{ content, status, activeForm: typeof item.activeForm === 'string' ? item.activeForm : undefined } as TodoItem]
+      : []
+  })
+  if (todos.length > 0) {
+    const index = findLastIndex(entries, entry => entry.role === 'assistant')
+    if (index >= 0) entries[index] = {
+      ...entries[index],
+      segments: [...(entries[index].segments ?? []), {
+        id: 'session-view-todos', type: 'todo', items: todos, updatedAtMs: session.revision,
+      }],
+    }
+  }
+  return entries
+}
 
 const PERMISSION_MODE_OPTIONS: Array<{ value: PermissionModeValue; label: string }> = [
   { value: 'ask_every_time', label: '每次询问' },
@@ -1703,6 +1804,11 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
   const [cancellingInputs, setCancellingInputs] = useState<string[]>([])
   const [resolvingApprovals, setResolvingApprovals] = useState<string[]>([])
   const [detailSubagent, setDetailSubagent] = useState<SubagentEntry | null>(null)
+  const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([])
+  const [sessionRevision, setSessionRevision] = useState(0)
+  const [restoringRunId, setRestoringRunId] = useState<string | null>(null)
+  const [branchParentRunId, setBranchParentRunId] = useState<string | null>(null)
+  const [recoveryRevision, setRecoveryRevision] = useState(0)
   const [workingDir, setWorkingDir] = useState('')
   const [permissionMode, setPermissionMode] = useState<PermissionModeValue>('ask_every_time')
   const [runMode, setRunMode] = useState<RunModeValue>('chat')
@@ -1757,6 +1863,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
 
     const eventTypes = [
       'session.ready',
+      'session.view',
       'user.message',
       'run.started',
       'assistant.thinking.token',
@@ -1807,6 +1914,17 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       const runId = data.runId ?? undefined
       const payload = data.payload ?? {}
 
+      const recordTerminalCheckpoint = (status: string) => {
+        if (!runId) return
+        setSessionRevision(data.seq)
+        setCheckpoints(current => [
+          ...current
+            .filter(item => item.runId !== runId)
+            .map(item => ({ ...item, current: false })),
+          { runId, terminalRevision: data.seq, status, current: true, restorable: true },
+        ])
+      }
+
       if (data.type === 'context.warning') {
         setContextWarning({
           tokenCount: payload.tokenCount as number,
@@ -1824,6 +1942,16 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       if (data.type === 'session.ready') {
         setPanelState(current => (current === 'connecting' ? 'ready' : current))
         setError(current => (current === AGENT_EVENT_CONNECTION_ERROR ? null : current))
+        return
+      }
+
+      if (data.type === 'session.view') {
+        const view = payload as unknown as AgentSessionResponse
+        if (view.sessionId) {
+          setMessages(chatEntriesFromSessionView(view))
+          setSessionRevision(view.revision)
+          setPanelState(view.activeRunId ? 'running' : 'ready')
+        }
         return
       }
 
@@ -1874,7 +2002,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
             return current
           }
 
-          const next: ChatEntry[] = [...current, { id, role: 'user', content: text, final: true }]
+          const next: ChatEntry[] = [...current, { id, role: 'user', content: text, runId, final: true }]
           if (isSteer) {
             next.push({
               id: `steer-assistant-${messageId}`,
@@ -2354,6 +2482,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         flushTokenBuffer()
         setPanelState('ready')
         setError(null)
+        recordTerminalCheckpoint('completed')
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
@@ -2373,6 +2502,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         flushTokenBuffer()
         setPanelState('error')
         setError(content)
+        recordTerminalCheckpoint('failed')
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
@@ -2397,6 +2527,7 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         flushTokenBuffer()
         setPanelState('ready')
         setError(null)
+        recordTerminalCheckpoint(data.type === 'run.cancelled' ? 'cancelled' : 'interrupted')
         setMessages(current =>
           updateAssistantEntry(current, runId, entry => ({
             ...entry,
@@ -2436,15 +2567,24 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
         if (closed) return
 
         if (initialSessionId) {
-          const history = await agentApi.history(initialSessionId)
+          const checkpointData = await agentApi.checkpoints(initialSessionId)
           if (closed) return
-          history.items
-            .slice()
-            .sort((left, right) => left.seq - right.seq)
-            .forEach(applyAgentEvent)
+          setCheckpoints(checkpointData.items)
+          setMessages(chatEntriesFromSessionView(data))
+          setPendingInputs(data.agent.pendingInputs.flatMap(item => {
+            const id = typeof item.messageId === 'string' ? item.messageId : ''
+            const text = typeof item.text === 'string' ? item.text : ''
+            return id && text ? [{
+              id,
+              text,
+              mode: item.mode === 'steer' ? 'steer' as const : 'followup' as const,
+              steerable: item.steerable === true,
+            }] : []
+          }))
         }
 
         setSessionId(data.sessionId)
+        setSessionRevision(data.revision)
         onSessionReady?.(data.sessionId)
         setWorkingDir(data.workingDir)
         setPermissionMode(normalizePermissionMode(data.permissionMode))
@@ -2504,7 +2644,21 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       tokenBufferRef.current.clear()
       source?.close()
     }
-  }, [initialSessionId, onSessionReady])
+  }, [initialSessionId, onSessionReady, recoveryRevision])
+
+  const restoreCheckpoint = useCallback(async (runId: string) => {
+    if (!sessionId || panelState === 'running') return
+    setRestoringRunId(runId)
+    setError(null)
+    try {
+      await agentApi.restoreCheckpoint(sessionId, runId, sessionRevision)
+      setRecoveryRevision(current => current + 1)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '检查点恢复失败。')
+    } finally {
+      setRestoringRunId(null)
+    }
+  }, [panelState, sessionId, sessionRevision])
 
   const copyMessage = useCallback(async (entry: ChatEntry) => {
     const text = buildChatEntryCopyText(entry)
@@ -2557,8 +2711,14 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
       },
     ])
 
-    await agentApi.createRun(sessionId, nextText, runMode)
-  }, [panelState, runMode, sessionId])
+    const branching = branchParentRunId !== null
+    await agentApi.createRun(sessionId, nextText, runMode, branchParentRunId ?? undefined)
+    setBranchParentRunId(null)
+    if (branching) {
+      // 后端此时已把 activeRun 切到新路径；重新读取该路径，去掉原兄弟分支的消息。
+      setRecoveryRevision(current => current + 1)
+    }
+  }, [branchParentRunId, panelState, runMode, sessionId])
 
   const handleSubmit = useCallback(async ({ text }: { text: string }) => {
     const nextText = text.trim()
@@ -2650,15 +2810,17 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
           workingDir: nextWorkingDir,
           permissionMode: nextPermissionMode,
           runMode: nextRunMode,
+          expectedRevision: sessionRevision,
         },
       )
       setWorkingDir(data.workingDir)
       setPermissionMode(normalizePermissionMode(data.permissionMode))
       setRunMode(normalizeRunMode(data.runMode))
+      setSessionRevision(data.revision)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '更新会话配置失败。')
     }
-  }, [permissionMode, runMode, sessionId, workingDir])
+  }, [permissionMode, runMode, sessionId, sessionRevision, workingDir])
 
   const canSubmit = Boolean(sessionId && draft.trim()) && panelState !== 'connecting'
   const isEmptyConversation = messages.length === 0
@@ -2722,8 +2884,13 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
             />
           ) : null}
 
-          {messages.map(entry => (
-            <Message className={entry.role === 'assistant' ? 'max-w-full' : undefined} from={entry.role} key={entry.id}>
+          {messages.map(entry => {
+            const checkpoint = entry.role === 'assistant' && entry.final && entry.runId
+              ? checkpoints.find(item => item.runId === entry.runId)
+              : undefined
+            return (
+            <Fragment key={entry.id}>
+            <Message className={entry.role === 'assistant' ? 'max-w-full' : undefined} from={entry.role}>
               <MessageContent className={entry.role === 'assistant' ? 'w-full max-w-[880px]' : undefined}>
                 {entry.role === 'assistant' ? (
                   <div className="space-y-4">
@@ -2757,7 +2924,32 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
                 </MessageActions>
               ) : null}
             </Message>
-          ))}
+            {checkpoint ? (
+              <Checkpoint aria-label={`运行 ${checkpoint.runId} 的检查点`}>
+                <CheckpointTrigger
+                  disabled={checkpoint.current || panelState === 'running' || restoringRunId !== null}
+                  onClick={() => void restoreCheckpoint(checkpoint.runId)}
+                  tooltip={checkpoint.current ? '当前所在检查点' : '恢复 Agent 状态和对话到此处'}
+                >
+                  <CheckpointIcon />
+                  {checkpoint.current ? '当前检查点' : restoringRunId === checkpoint.runId ? '恢复中…' : '恢复到此处'}
+                </CheckpointTrigger>
+                <CheckpointTrigger
+                  disabled={panelState === 'running' || restoringRunId !== null}
+                  onClick={() => {
+                    setBranchParentRunId(checkpoint.runId)
+                    promptTextareaRef.current?.focus()
+                  }}
+                  tooltip="下一条消息将以此检查点为父节点创建新路径"
+                >
+                  <GitBranch className="size-4" />
+                  {branchParentRunId === checkpoint.runId ? '将从此处继续' : '从此处继续'}
+                </CheckpointTrigger>
+              </Checkpoint>
+            ) : null}
+            </Fragment>
+            )
+          })}
         </ConversationContent>
         <ConversationScrollButton />
         <SubagentStack
@@ -2838,6 +3030,13 @@ function ChatPanel({ width, initialInput, initialSessionId, onSessionReady, work
           ) : null}
 
           {error ? <div className="mb-3 text-xs text-destructive">{error}</div> : null}
+
+          {branchParentRunId ? (
+            <div className="mb-2 flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <span>下一条消息会从所选检查点创建新的子运行。</span>
+              <Button onClick={() => setBranchParentRunId(null)} size="sm" type="button" variant="ghost">取消</Button>
+            </div>
+          ) : null}
 
           <PromptInput className="w-full" onSubmit={handleSubmit}>
             <PromptInputBody>

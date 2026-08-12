@@ -34,7 +34,24 @@ public class SessionPathResolver {
      * 返回当前会话唯一的 Durable Journal 路径。
      */
     public Path journalPath(String sessionId) {
-        return projectDir().resolve(sessionId + ".journal.jsonl");
+        return sessionDir(sessionId).resolve("events.jsonl");
+    }
+
+    /** 返回一个 Session 的独占持久化目录。 */
+    public Path sessionDir(String sessionId) {
+        return projectDir().resolve(requireSafeId(sessionId, "sessionId"));
+    }
+
+    /** 返回 Session 的可重建 Run 图索引路径。 */
+    public Path sessionIndexPath(String sessionId) {
+        return sessionDir(sessionId).resolve("session-index.json");
+    }
+
+    /** 返回指定终态 Run 的不可变 Snapshot 路径。 */
+    public Path runSnapshotPath(String sessionId, String runId) {
+        return sessionDir(sessionId)
+                .resolve("snapshots")
+                .resolve(requireSafeId(runId, "runId") + ".snapshot.json");
     }
 
     /**
@@ -80,5 +97,13 @@ public class SessionPathResolver {
             log.warn("无法使用 SHA-256 生成工作区键，退回 hashCode", e);
             return Integer.toHexString(String.valueOf(text).hashCode());
         }
+    }
+
+    /** 仅允许系统生成的简单标识参与路径计算。 */
+    private static String requireSafeId(String value, String name) {
+        if (value == null || !value.matches("[A-Za-z0-9._-]+")) {
+            throw new IllegalArgumentException(name + " contains unsafe path characters");
+        }
+        return value;
     }
 }

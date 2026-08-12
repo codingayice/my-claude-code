@@ -37,7 +37,11 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import cn.ayice.veyra.session.state.AgentPhase;
+import cn.ayice.veyra.session.persistence.SessionJournalRecorder;
+import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 import java.util.concurrent.Executor;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -190,7 +194,7 @@ public class AgentLoop {
                 history = state.messages();
                 nextSequence = state.nextSequence();
                 String terminal = terminalMessage(state);
-                events.runCompleted(state.state(), terminal);
+                events.runCompleted(state.phase().name(), terminal);
                 return terminal;
             }
 
@@ -249,6 +253,11 @@ public class AgentLoop {
 
             ChatRequest request = prepared.request();
             AiMessage aiMessage;
+            String modelCallId = java.util.UUID.randomUUID().toString();
+            recordDomain(SessionJournalTypes.MODEL_CALL_STARTED, Map.of(
+                    "modelCallId", modelCallId,
+                    "round", state.turnCount()
+            ));
             try {
                 CompletableFuture<AiMessage> future = ai.streamingChat(
                         request.messages(),
@@ -257,6 +266,12 @@ public class AgentLoop {
                 );
                 aiMessage = ModelCallExecutor.await(future, modelCallTimeoutMs);
             } catch (Exception modelFailure) {
+                recordDomain(SessionJournalTypes.MODEL_CALL_FAILED, Map.of(
+                        "modelCallId", modelCallId,
+                        "errorCode", "MODEL_CALL_FAILED",
+                        "retryable", true,
+                        "round", state.turnCount()
+                ));
                 if (!promptTooLongCompactionAttempted && isPromptTooLong(modelFailure)) {
                     promptTooLongCompactionAttempted = true;
                     long reactiveStartedAt = System.currentTimeMillis();
@@ -270,7 +285,7 @@ public class AgentLoop {
                         state = state.withMessages(reactive.messages())
                                 .withCapacityState(reactive.capacityState())
                                 .withRequest(null)
-                                .withState(LoopState.ACTIVE, "prompt_too_long_compacted")
+                                .withPhase(AgentPhase.READY_FOR_MODEL, "prompt_too_long_compacted")
                                 .markStable();
                         events.contextUsage(reactive, compactConfig);
                         if (reactive.strategy() != CompactionService.Strategy.NONE) {
@@ -301,14 +316,14 @@ public class AgentLoop {
                             .withAiMessage(null)
                             .withApprovedRequests(null)
                             .withRequest(null)
-                            .withTerminalState(LoopState.TERMINAL_FAILED, "model_call_failed");
+                            .withTerminalPhase(AgentPhase.TERMINAL_FAILED, "model_call_failed");
                     continue;
                 }
                 state = state.withFailureCount(nextFailureCount)
                         .withAiMessage(null)
                         .withApprovedRequests(null)
                         .withRequest(null)
-                        .withState(LoopState.ACTIVE, "model_call_failed");
+                        .withPhase(AgentPhase.READY_FOR_MODEL, "model_call_failed");
                 continue;
             }
 
@@ -326,7 +341,7 @@ public class AgentLoop {
                         .withFailureCount(0)
                         .withTurnCount(state.turnCount() + 1)
                         .withApprovedRequests(null)
-                        .withTerminalState(LoopState.TERMINAL_COMPLETED, "completed");
+                        .withTerminalPhase(AgentPhase.TERMINAL_COMPLETED, "completed");
                 continue;
             }
 
@@ -369,7 +384,7 @@ public class AgentLoop {
                 state = state.withAiMessage(aiMessage)
                         .withRequest(request)
                         .withApprovedRequests(null)
-                        .withTerminalState(LoopState.TERMINAL_MAX_ROUNDS, "max_turns");
+                        .withTerminalPhase(AgentPhase.TERMINAL_MAX_ROUNDS, "max_turns");
                 continue;
             }
             state = state.withAiMessage(aiMessage)
@@ -377,7 +392,14 @@ public class AgentLoop {
                     .withApprovedRequests(null)
                     .withFailureCount(0)
                     .withTurnCount(nextRound)
-                    .withState(LoopState.ACTIVE, "next_turn");
+                    .withPhase(AgentPhase.READY_FOR_MODEL, "next_turn");
+        }
+    }
+
+    /** 从 Agent 状态机动作边界追加稳定领域事件。 */
+    private void recordDomain(String type, Map<String, Object> payload) {
+        if (messageRecorder instanceof SessionJournalRecorder recorder) {
+            recorder.recordDomainEvent(type, payload);
         }
     }
 
@@ -394,12 +416,12 @@ public class AgentLoop {
      * 将循环终态转换为返回给当前调用方的稳定文本。
      */
     private String terminalMessage(LoopState state) {
-        return switch (state.state()) {
-            case LoopState.TERMINAL_COMPLETED -> state.aiMessage() != null ? state.aiMessage().text() : "";
-            case LoopState.TERMINAL_MAX_ROUNDS ->
+        return switch (state.phase()) {
+            case TERMINAL_COMPLETED -> state.aiMessage() != null ? state.aiMessage().text() : "";
+            case TERMINAL_MAX_ROUNDS ->
                     "<error>已达到最大轮数 (" + maxRounds + ")，任务仍未完成。对话结束。</error>";
-            case LoopState.TERMINAL_FAILED -> "<error>LLM 调用连续失败次数过多。对话结束。</error>";
-            case LoopState.TERMINAL_CANCELLED -> "<error>对话已取消。</error>";
+            case TERMINAL_FAILED -> "<error>LLM 调用连续失败次数过多。对话结束。</error>";
+            case TERMINAL_CANCELLED -> "<error>对话已取消。</error>";
             default -> state.aiMessage() != null ? state.aiMessage().text() : "";
         };
     }
@@ -414,6 +436,11 @@ public class AgentLoop {
     /** 返回当前 Session 与主循环共享的运行中输入队列。 */
     public PendingInputQueue pendingInputs() {
         return pendingInputs;
+    }
+
+    /** 恢复 SessionState 中尚未消费的 Pending Input。 */
+    public void restorePendingInputs(List<Map<String, Object>> persisted) {
+        pendingInputs.restore(persisted);
     }
 
     /**

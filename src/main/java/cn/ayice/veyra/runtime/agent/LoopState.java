@@ -11,22 +11,17 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import cn.ayice.veyra.session.state.AgentPhase;
 
 /**
  * 单次 process 内的 Agent 循环状态，也是该阶段 Working History 的唯一可变来源。
  */
 public final class LoopState {
 
-    public static final String ACTIVE = "ACTIVE";
-    public static final String TERMINAL_COMPLETED = "TERMINAL_COMPLETED";
-    public static final String TERMINAL_MAX_ROUNDS = "TERMINAL_MAX_ROUNDS";
-    public static final String TERMINAL_FAILED = "TERMINAL_FAILED";
-    public static final String TERMINAL_CANCELLED = "TERMINAL_CANCELLED";
-
     private List<WorkingMessage> messages;
     private long nextSequence; // 下一条原始消息的 sequence，供 process 内唯一分配使用
     private long currentStableSequence; // 最近一次完整工具批次或最终回复后的稳定原始序号
-    private String state;
+    private AgentPhase phase;
     private String transitionReason;
     private int turnCount;
     private int failureCount;
@@ -39,7 +34,7 @@ public final class LoopState {
             List<WorkingMessage> messages,
             long nextSequence,
             long currentStableSequence,
-            String state,
+            AgentPhase phase,
             String transitionReason,
             int turnCount,
             int failureCount,
@@ -51,7 +46,7 @@ public final class LoopState {
         this.messages = new ArrayList<>(messages);
         this.nextSequence = nextSequence;
         this.currentStableSequence = currentStableSequence;
-        this.state = state;
+        this.phase = phase;
         this.transitionReason = transitionReason;
         this.turnCount = turnCount;
         this.failureCount = failureCount;
@@ -69,7 +64,7 @@ public final class LoopState {
                 messages,
                 nextSequence,
                 stableSequence,
-                ACTIVE,
+                AgentPhase.READY_FOR_MODEL,
                 null,
                 1,
                 0,
@@ -160,22 +155,22 @@ public final class LoopState {
     /**
      * 返回 ACTIVE 或 TERMINAL_* 循环状态。
      */
-    public String state() {
-        return state;
+    public AgentPhase phase() {
+        return phase;
     }
 
     /**
      * 判断当前状态是否禁止继续进入模型轮次。
      */
     public boolean isTerminal() {
-        return state != null && state.startsWith("TERMINAL_");
+        return phase != null && phase.terminal();
     }
 
     /**
      * 判断当前状态是否允许继续准备模型请求。
      */
     public boolean isActive() {
-        return ACTIVE.equals(state);
+        return phase != null && !phase.terminal();
     }
 
     /**
@@ -223,8 +218,8 @@ public final class LoopState {
     /**
      * 替换循环状态和迁移原因，保留当前上下文及轮次数据。
      */
-    public LoopState withState(String newState, String newReason) {
-        state = newState;
+    public LoopState withPhase(AgentPhase newPhase, String newReason) {
+        phase = newPhase;
         transitionReason = newReason;
         return this;
     }
@@ -232,8 +227,11 @@ public final class LoopState {
     /**
      * 进入指定 TERMINAL_* 状态并记录原因。
      */
-    public LoopState withTerminalState(String terminalState, String reason) {
-        return withState(terminalState, reason);
+    public LoopState withTerminalPhase(AgentPhase terminalPhase, String reason) {
+        if (!terminalPhase.terminal()) {
+            throw new IllegalArgumentException("terminal phase required");
+        }
+        return withPhase(terminalPhase, reason);
     }
 
     /**

@@ -7,6 +7,8 @@ import java.util.Map;
  * Session append-only Journal 的单行稳定事实。
  */
 public record SessionJournalEntry(
+        int schemaVersion,
+        String eventId,
         long sequence,
         String sessionId,
         String runId,
@@ -15,6 +17,12 @@ public record SessionJournalEntry(
         Map<String, Object> payload
 ) {
     public SessionJournalEntry {
+        if (schemaVersion != 1) {
+            throw new IllegalArgumentException("unsupported event schemaVersion: " + schemaVersion);
+        }
+        if (eventId == null || eventId.isBlank()) {
+            throw new IllegalArgumentException("eventId must not be blank");
+        }
         if (sequence <= 0) {
             throw new IllegalArgumentException("sequence must be positive");
         }

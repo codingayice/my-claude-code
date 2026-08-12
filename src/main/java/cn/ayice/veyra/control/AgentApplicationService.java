@@ -13,8 +13,8 @@ import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptEntryResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
 import cn.ayice.veyra.control.dto.session.UpdateSessionSettingsRequest;
-import cn.ayice.veyra.control.dto.session.SessionHistoryResponse;
-import cn.ayice.veyra.control.dto.session.StableEventResponse;
+import cn.ayice.veyra.control.dto.session.CheckpointListResponse;
+import cn.ayice.veyra.control.dto.session.RunCheckpointResponse;
 import cn.ayice.veyra.control.exception.AgentApiException;
 import cn.ayice.veyra.runtime.CommandOption;
 import cn.ayice.veyra.runtime.CommandResult;
@@ -60,6 +60,11 @@ public class AgentApplicationService {
         return new SessionListResponse(items);
     }
 
+    /** 删除一个当前未运行的会话。 */
+    public boolean deleteSession(String sessionId) {
+        return runtimeHost.deleteSession(sessionId);
+    }
+
     /**
      * 返回指定会话的当前状态。
      */
@@ -71,12 +76,17 @@ public class AgentApplicationService {
      * 更新指定会话设置并返回新状态。
      */
     public SessionResponse updateSettings(String sessionId, UpdateSessionSettingsRequest request) {
-        return toSessionResponse(runtimeHost.updateSettings(
-                sessionId,
-                request.workingDir(),
-                request.permissionMode(),
-                request.runMode()
-        ));
+        try {
+            return toSessionResponse(runtimeHost.updateSettings(
+                    sessionId, request.workingDir(), request.permissionMode(), request.runMode(),
+                    request.expectedRevision()
+            ));
+        } catch (IllegalStateException conflict) {
+            if ("SESSION_REVISION_CONFLICT".equals(conflict.getMessage())) {
+                throw new AgentApiException(HttpStatus.CONFLICT, "A0409", conflict.getMessage(), conflict);
+            }
+            throw conflict;
+        }
     }
 
     /**
@@ -89,28 +99,38 @@ public class AgentApplicationService {
         return new TranscriptResponse(items);
     }
 
-    /**
-     * 返回恢复完成后的稳定事件历史，供桌面端复用实时 reducer。
-     */
-    public SessionHistoryResponse stableHistory(String sessionId) {
-        return new SessionHistoryResponse(runtimeHost.stableHistory(sessionId).stream()
-                .map(event -> new StableEventResponse(
-                        event.seq(),
-                        event.sessionId(),
-                        event.runId(),
-                        event.type(),
-                        event.timestampMs(),
-                        event.payload()
+    /** 使用可选历史父 Run 提交一次执行。 */
+    public CreateRunResponse createRun(String sessionId, String input, String mode, String parentRunId) {
+        RunSubmission submission = runtimeHost.submitRun(sessionId, input, mode, parentRunId);
+        return new CreateRunResponse(submission.runId(), submission.accepted());
+    }
+
+    /** 从当前检查点提交一次 Agent 或 Chat Run。 */
+    public CreateRunResponse createRun(String sessionId, String input, String mode) {
+        return createRun(sessionId, input, mode, null);
+    }
+
+    /** 返回 Session 内全部终态 Run 检查点。 */
+    public CheckpointListResponse checkpoints(String sessionId) {
+        return new CheckpointListResponse(runtimeHost.checkpoints(sessionId).stream()
+                .map(checkpoint -> new RunCheckpointResponse(
+                        checkpoint.runId(), checkpoint.parentRunId(), checkpoint.terminalRevision(),
+                        checkpoint.status(), checkpoint.current(), checkpoint.snapshotAvailable()
                 ))
                 .toList());
     }
 
-    /**
-     * 提交一次 Agent 或 Chat Run，并返回稳定运行标识。
-     */
-    public CreateRunResponse createRun(String sessionId, String input, String mode) {
-        RunSubmission submission = runtimeHost.submitRun(sessionId, input, mode);
-        return new CreateRunResponse(submission.runId(), submission.accepted());
+    /** 将当前 Session 回退到指定检查点。 */
+    public SessionResponse restoreCheckpoint(String sessionId, String runId, long expectedRevision) {
+        try {
+            return toSessionResponse(runtimeHost.restoreCheckpoint(sessionId, runId, expectedRevision));
+        } catch (IllegalStateException conflict) {
+            if ("SESSION_REVISION_CONFLICT".equals(conflict.getMessage())
+                    || "SESSION_ALREADY_RUNNING".equals(conflict.getMessage())) {
+                throw new AgentApiException(HttpStatus.CONFLICT, "A0409", conflict.getMessage(), conflict);
+            }
+            throw conflict;
+        }
     }
 
     /** 将运行期间的新输入加入默认追随队列。 */
@@ -183,7 +203,12 @@ public class AgentApplicationService {
                 session.workingDir(),
                 session.permissionMode(),
                 session.runMode(),
-                session.lastRunStatus()
+                session.lastRunStatus(),
+                session.revision(),
+                session.currentRunId(),
+                session.activeRunId(),
+                session.runs(),
+                session.agent()
         );
     }
 

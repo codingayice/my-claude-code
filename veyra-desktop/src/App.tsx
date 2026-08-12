@@ -20,12 +20,14 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
+  Pin,
   Presentation,
   Save,
   Scale,
   Search,
   RefreshCw,
   Table2,
+  Trash2,
   type LucideIcon,
 } from "lucide-react"
 
@@ -129,6 +131,8 @@ const MODULES: Array<{
   { id: "tasks", label: "自动化", icon: RefreshCw },
   { id: "history", label: "更多", description: "历史记录", icon: Ellipsis },
 ]
+
+const PINNED_SESSIONS_STORAGE_KEY = "veyra.pinned-session-ids"
 
 const WORKSPACE_APP_ICONS: Record<WorkspaceApp["iconKey"], LucideIcon> = {
   contract: Scale,
@@ -280,6 +284,14 @@ function App() {
     setActiveAssistantSessionId(null)
     setActiveModule("ai")
   }, [])
+
+  const handleAssistantSessionDeleted = useCallback((sessionId: string) => {
+    if (activeAssistantSessionId === sessionId) {
+      setAssistantSessionTarget(current => ({ revision: current.revision + 1, sessionId: null }))
+      setActiveAssistantSessionId(null)
+    }
+    setAssistantSessionsRevision(current => current + 1)
+  }, [activeAssistantSessionId])
 
   const handleAssistantSessionReady = useCallback((sessionId: string) => {
     setActiveAssistantSessionId(sessionId)
@@ -508,6 +520,7 @@ function App() {
           onModuleChange={setActiveModule}
           onNewSession={createAssistantSession}
           onOpenSession={openAssistantSession}
+          onSessionDeleted={handleAssistantSessionDeleted}
           refreshKey={assistantSessionsRevision}
         />
 
@@ -863,6 +876,7 @@ function WorkspaceSidebar({
   onModuleChange,
   onNewSession,
   onOpenSession,
+  onSessionDeleted,
   refreshKey,
 }: {
   activeModule: WorkspaceModule
@@ -872,6 +886,7 @@ function WorkspaceSidebar({
   onModuleChange: (module: WorkspaceModule) => void
   onNewSession: () => void
   onOpenSession: (sessionId: string) => void
+  onSessionDeleted: (sessionId: string) => void
   refreshKey: number
 }) {
   const [sessions, setSessions] = useState<AgentSessionRecord[]>([])
@@ -880,6 +895,16 @@ function WorkspaceSidebar({
   const [error, setError] = useState<string | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [sessionsOpen, setSessionsOpen] = useState(true)
+  const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([])
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<string[]>(() => {
+    try {
+      const stored = window.localStorage.getItem(PINNED_SESSIONS_STORAGE_KEY)
+      const parsed: unknown = stored ? JSON.parse(stored) : []
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []
+    } catch {
+      return []
+    }
+  })
 
   const loadSessions = useCallback(async () => {
     setLoading(true)
@@ -899,14 +924,47 @@ function WorkspaceSidebar({
     void loadSessions()
   }, [loadSessions, refreshKey])
 
+  useEffect(() => {
+    window.localStorage.setItem(PINNED_SESSIONS_STORAGE_KEY, JSON.stringify(pinnedSessionIds))
+  }, [pinnedSessionIds])
+
   const visibleSessions = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    if (!normalized) return sessions
-    return sessions.filter(session =>
+    const filtered = normalized ? sessions.filter(session =>
       session.title.toLowerCase().includes(normalized) ||
       session.sessionId.toLowerCase().includes(normalized)
-    )
-  }, [query, sessions])
+    ) : sessions
+    const pinnedOrder = new Map(pinnedSessionIds.map((id, index) => [id, index]))
+    return [...filtered].sort((left, right) => {
+      const leftPin = pinnedOrder.get(left.sessionId)
+      const rightPin = pinnedOrder.get(right.sessionId)
+      if (leftPin !== undefined && rightPin !== undefined) return leftPin - rightPin
+      if (leftPin !== undefined) return -1
+      if (rightPin !== undefined) return 1
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    })
+  }, [pinnedSessionIds, query, sessions])
+
+  const togglePinnedSession = useCallback((sessionId: string) => {
+    setPinnedSessionIds(current => current.includes(sessionId)
+      ? current.filter(id => id !== sessionId)
+      : [sessionId, ...current])
+  }, [])
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    setDeletingSessionIds(current => current.includes(sessionId) ? current : [...current, sessionId])
+    setError(null)
+    try {
+      await agentApi.deleteSession(sessionId)
+      setSessions(current => current.filter(session => session.sessionId !== sessionId))
+      setPinnedSessionIds(current => current.filter(id => id !== sessionId))
+      onSessionDeleted(sessionId)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "会话删除失败。")
+    } finally {
+      setDeletingSessionIds(current => current.filter(id => id !== sessionId))
+    }
+  }, [onSessionDeleted])
 
   return (
     <Sidebar
@@ -1061,7 +1119,7 @@ function WorkspaceSidebar({
                 ) : (
                   <SidebarMenu className="gap-0.5">
                     {visibleSessions.map(session => (
-                      <SidebarMenuItem key={session.sessionId}>
+                      <SidebarMenuItem className="group/task-row" key={session.sessionId}>
                         <SidebarMenuButton
                           className="h-8 rounded-lg py-0 pl-2 pr-[4.75rem] text-xs font-normal hover:bg-black/5 data-[active=true]:bg-black/[0.055]"
                           isActive={activeSessionId === session.sessionId}
@@ -1069,9 +1127,41 @@ function WorkspaceSidebar({
                         >
                           <span className="truncate">{session.title || session.sessionId}</span>
                         </SidebarMenuButton>
-                        <SidebarMenuBadge className="right-2 max-w-16 truncate text-[10px] font-normal text-muted-foreground/55">
-                          {formatRelativeSessionTime(session.updatedAt)}
-                        </SidebarMenuBadge>
+                        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center">
+                          <span className="max-w-16 truncate pr-1 text-[10px] font-normal text-muted-foreground/55 group-hover/task-row:hidden group-focus-within/task-row:hidden">
+                            {formatRelativeSessionTime(session.updatedAt)}
+                          </span>
+                          <div className="hidden items-center gap-0.5 rounded-md bg-[#f7f7f7] group-hover/task-row:flex group-focus-within/task-row:flex">
+                            <button
+                              aria-label={pinnedSessionIds.includes(session.sessionId) ? "取消置顶任务" : "置顶任务"}
+                              className={cn(
+                                "flex size-6 items-center justify-center rounded-md text-muted-foreground/65 hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                                pinnedSessionIds.includes(session.sessionId) && "text-foreground"
+                              )}
+                              onClick={event => {
+                                event.stopPropagation()
+                                togglePinnedSession(session.sessionId)
+                              }}
+                              type="button"
+                            >
+                              <Pin className={cn("size-3.5", pinnedSessionIds.includes(session.sessionId) && "fill-current")} />
+                            </button>
+                            <button
+                              aria-label="删除任务"
+                              className="flex size-6 items-center justify-center rounded-md text-muted-foreground/65 hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-40"
+                              disabled={deletingSessionIds.includes(session.sessionId)}
+                              onClick={event => {
+                                event.stopPropagation()
+                                void deleteSession(session.sessionId)
+                              }}
+                              type="button"
+                            >
+                              {deletingSessionIds.includes(session.sessionId)
+                                ? <Loader2 className="size-3.5 animate-spin" />
+                                : <Trash2 className="size-3.5" />}
+                            </button>
+                          </div>
+                        </div>
                       </SidebarMenuItem>
                     ))}
                   </SidebarMenu>

@@ -12,6 +12,7 @@ import cn.ayice.veyra.control.dto.session.TranscriptResponse;
 import cn.ayice.veyra.session.persistence.SessionPathResolver;
 import cn.ayice.veyra.session.persistence.JournalMessageCodec;
 import cn.ayice.veyra.session.persistence.SessionJournalStore;
+import cn.ayice.veyra.session.persistence.SessionJournalTypes;
 import cn.ayice.veyra.session.recovery.SessionRecovery;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -44,9 +45,9 @@ class AgentApplicationServiceTest {
 
         try (sessions) {
             SessionResponse created = application.createSession();
-            store.append(created.sessionId(), "run-1", "user.message.recorded",
+            store.append(created.sessionId(), "run-1", SessionJournalTypes.USER_MESSAGE_RECORDED,
                     JournalMessageCodec.encode(UserMessage.from("问题")), true);
-            store.append(created.sessionId(), "run-1", "assistant.message.recorded",
+            store.append(created.sessionId(), "run-1", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
                     JournalMessageCodec.encode(AiMessage.from("回答")), true);
 
             SessionListResponse listed = application.listSessions();

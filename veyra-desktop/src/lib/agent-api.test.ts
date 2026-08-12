@@ -59,14 +59,6 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
       content: "hello",
       timestamp: "2026-08-08T00:00:00Z",
     }] }),
-    apiResponse({ items: [{
-      seq: 1,
-      sessionId: "session/1",
-      runId: "run-1",
-      type: "user.message",
-      timestampMs: 1786147200000,
-      payload: { text: "hello" },
-    }] }),
     apiResponse({ runId: "run-1", accepted: true }, 202),
     apiResponse({ ok: true }),
     apiResponse({
@@ -89,7 +81,6 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
   assert.equal((await client.listSessions()).items[0].title, "First session")
   assert.equal((await client.session("session/1")).lastRunStatus, "completed")
   assert.equal((await client.transcript("session/1")).items[0].content, "hello")
-  assert.equal((await client.history("session/1")).items[0].type, "user.message")
   assert.deepEqual(await client.createRun("session/1", "hello", "agent"), {
     runId: "run-1",
     accepted: true,
@@ -112,26 +103,25 @@ test("uses the Veyra API contract and unwraps unified responses", async () => {
   assert.equal(requests[2].url, `${AGENT_API_BASE}/sessions`)
   assert.equal(requests[3].url, `${AGENT_API_BASE}/sessions/session%2F1`)
   assert.equal(requests[4].url, `${AGENT_API_BASE}/sessions/session%2F1/transcript`)
-  assert.equal(requests[5].url, `${AGENT_API_BASE}/sessions/session%2F1/history`)
-  assert.equal(requests[6].url, `${AGENT_API_BASE}/sessions/session%2F1/runs`)
+  assert.equal(requests[5].url, `${AGENT_API_BASE}/sessions/session%2F1/runs`)
   assert.equal(
-    requests[6].init?.body,
+    requests[5].init?.body,
     JSON.stringify({ input: "hello", mode: "agent" })
   )
   assert.equal(
-    requests[7].url,
+    requests[6].url,
     `${AGENT_API_BASE}/sessions/session%2F1/approvals/approval%2F1/decision`
   )
   assert.equal(
-    requests[7].init?.body,
+    requests[6].init?.body,
     JSON.stringify({ decision: "allow_once" })
   )
   assert.equal(
-    requests[8].url,
+    requests[7].url,
     `${AGENT_API_BASE}/sessions/session%2F1/settings`
   )
   assert.equal(
-    requests[8].init?.body,
+    requests[7].init?.body,
     JSON.stringify({
       workingDir: "D:\\next",
       permissionMode: "project_auto",
@@ -197,4 +187,44 @@ test("queues, steers, and cancels followup inputs", async () => {
     `${AGENT_API_BASE}/sessions/session%2F1/followups/message%2F1`
   )
   assert.equal(requests[2].init?.method, "DELETE")
+})
+
+test("deletes a persisted session", async () => {
+  const requests: RecordedRequest[] = []
+  const client = createAgentApiClient(async (input, init) => {
+    requests.push({ url: String(input), init })
+    return apiResponse({ ok: true })
+  })
+
+  await client.deleteSession("session/1")
+
+  assert.equal(requests[0].url, `${AGENT_API_BASE}/sessions/session%2F1`)
+  assert.equal(requests[0].init?.method, "DELETE")
+})
+
+test("lists and restores run checkpoints with optimistic revision", async () => {
+  const requests: RecordedRequest[] = []
+  const responses = [
+    apiResponse({ items: [{ runId: "run/1", terminalRevision: 7, status: "completed", current: true, restorable: true }] }),
+    apiResponse({
+      sessionId: "session/1",
+      workingDir: "D:\\workspace",
+      permissionMode: "ask_every_time",
+      runMode: "chat",
+      revision: 8,
+      currentRunId: "run/1",
+      activeRunId: null,
+    }),
+  ]
+  const client = createAgentApiClient(async (input, init) => {
+    requests.push({ url: String(input), init })
+    return responses.shift()!
+  })
+
+  assert.equal((await client.checkpoints("session/1")).items[0].runId, "run/1")
+  await client.restoreCheckpoint("session/1", "run/1", 7)
+
+  assert.equal(requests[0].url, `${AGENT_API_BASE}/sessions/session%2F1/checkpoints`)
+  assert.equal(requests[1].url, `${AGENT_API_BASE}/sessions/session%2F1/checkpoint-restorations`)
+  assert.equal(requests[1].init?.body, JSON.stringify({ runId: "run/1", expectedRevision: 7 }))
 })

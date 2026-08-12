@@ -49,6 +49,13 @@ public final class SessionJournalRecorder implements JournalMessageRecorder {
 
     /** 持久化完整 Session 设置快照。 */
     public synchronized void recordSettings(Path workingDir, String permissionMode, String runMode) {
+        recordSettings(workingDir, permissionMode, runMode, null);
+    }
+
+    /** 使用乐观 revision 持久化完整 Session 设置。 */
+    public synchronized void recordSettings(
+            Path workingDir, String permissionMode, String runMode, Long expectedRevision
+    ) {
         if (!sessionPersisted) {
             return;
         }
@@ -56,7 +63,7 @@ public final class SessionJournalRecorder implements JournalMessageRecorder {
                 "workingDir", workingDir.toAbsolutePath().normalize().toString(),
                 "permissionMode", permissionMode,
                 "runMode", runMode
-        ), true);
+        ), true, expectedRevision, java.util.UUID.randomUUID().toString());
     }
 
     /** 持久化 Run 受理和首条用户消息，并建立唯一活动 Run。 */
@@ -68,13 +75,30 @@ public final class SessionJournalRecorder implements JournalMessageRecorder {
             String permissionMode,
             String runMode
     ) {
+        acceptRun(runId, input, mode, null, workingDir, permissionMode, runMode);
+    }
+
+    /** 从当前位置或指定历史父 Run 受理一次运行。 */
+    public synchronized void acceptRun(
+            String runId,
+            String input,
+            String mode,
+            String requestedParentRunId,
+            Path workingDir,
+            String permissionMode,
+            String runMode
+    ) {
         if (currentRunId != null) {
             throw new IllegalStateException("SESSION_ALREADY_RUNNING");
         }
         recordSessionCreated(workingDir, permissionMode, runMode);
+        String parentRunId = requestedParentRunId == null || requestedParentRunId.isBlank()
+                ? store.index(sessionId).currentRunId()
+                : requestedParentRunId;
         store.append(sessionId, runId, SessionJournalTypes.RUN_STARTED, Map.of(
                 "mode", mode,
-                "input", input
+                "input", input,
+                "parentRunId", parentRunId == null ? "" : parentRunId
         ), false);
         store.append(sessionId, runId, SessionJournalTypes.USER_MESSAGE_RECORDED, Map.of(
                 "text", input,
@@ -113,12 +137,9 @@ public final class SessionJournalRecorder implements JournalMessageRecorder {
         ), true);
     }
 
-    /**
-     * 持久化影响冷加载 UI 的稳定运行事件。消息、工具结果和 Run 生命周期由各自的
-     * 专用写入点负责，避免同一事实重复进入 Journal。
-     */
-    public synchronized void recordStableEvent(String type, Map<String, Object> payload) {
-        if (!sessionPersisted || currentRunId == null || !isStableUiEvent(type)) {
+    /** 从明确的领域边界写入一个当前 Run 稳定事件。 */
+    public synchronized void recordDomainEvent(String type, Map<String, Object> payload) {
+        if (!sessionPersisted || currentRunId == null) {
             return;
         }
         store.append(sessionId, currentRunId, type, payload, true);
@@ -151,26 +172,4 @@ public final class SessionJournalRecorder implements JournalMessageRecorder {
         return currentRunId;
     }
 
-    /** 判断实时事件是否属于必须持久化的稳定 UI 事实。 */
-    private static boolean isStableUiEvent(String type) {
-        return switch (type) {
-            case SessionJournalTypes.TOOL_CALL_STARTED,
-                 SessionJournalTypes.PERMISSION_REQUESTED,
-                 SessionJournalTypes.PERMISSION_RESOLVED,
-                 SessionJournalTypes.PERMISSION_INTERRUPTED,
-                 SessionJournalTypes.TODO_UPDATED,
-                 SessionJournalTypes.TASK_STARTED,
-                 SessionJournalTypes.TASK_STEP_STARTED,
-                 SessionJournalTypes.TASK_ASSISTANT_MESSAGE_COMPLETED,
-                 SessionJournalTypes.TASK_TOOL_CALL_STARTED,
-                 SessionJournalTypes.TASK_TOOL_CALL_COMPLETED,
-                 SessionJournalTypes.TASK_TOOL_CALL_REJECTED,
-                 SessionJournalTypes.TASK_PERMISSION_REQUESTED,
-                 SessionJournalTypes.TASK_PERMISSION_RESOLVED,
-                 SessionJournalTypes.TASK_COMPLETED,
-                 SessionJournalTypes.TASK_FAILED,
-                 SessionJournalTypes.TASK_KILLED -> true;
-            default -> false;
-        };
-    }
 }

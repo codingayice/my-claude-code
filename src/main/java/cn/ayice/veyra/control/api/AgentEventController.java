@@ -16,6 +16,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import java.io.IOException;
 import java.util.Map;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * 会话运行事件 SSE。前端通过它观察 agent 每一步做了什么。
@@ -25,6 +26,7 @@ import java.util.Map;
 public class AgentEventController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentEventController.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final RuntimeHost runtimeHost;
 
@@ -46,12 +48,17 @@ public class AgentEventController {
             events.addSubscriber(subscriber);
             try {
                 // 注册成功后先发送 ready，前端据此区分已建立连接和仍在重连。
+                long revision = runtimeHost.session(sessionId).revision();
                 subscriber.send(AgentEvent.of(
                         events.nextSeq(),
                         sessionId,
                         null,
                         "session.ready",
-                        Map.of("sessionId", sessionId)
+                        Map.of("sessionId", sessionId, "revision", revision)
+                ));
+                subscriber.send(AgentEvent.of(
+                        events.nextSeq(), sessionId, null, "session.view",
+                        MAPPER.convertValue(runtimeHost.session(sessionId), Map.class)
                 ));
                 subscriber.awaitCloseWithHeartbeat();
             } catch (IOException e) {

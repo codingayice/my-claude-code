@@ -63,6 +63,50 @@ public class RuntimeSessionRegistry implements AutoCloseable {
         return journalStore.listSessions();
     }
 
+    /** 删除空闲会话及其 Journal；运行中的会话拒绝删除。 */
+    public synchronized boolean deleteSession(String sessionId) {
+        SessionRuntime active = sessions.get(sessionId);
+        if (active != null && active.isRunning()) {
+            return false;
+        }
+        if (active != null && sessions.remove(sessionId, active)) {
+            active.close();
+        }
+        return journalStore.delete(sessionId);
+    }
+
+    /** 持久化当前检查点选择并用目标 Snapshot 重建整个 Runtime。 */
+    public synchronized SessionRuntime restoreCheckpoint(String sessionId, String runId, long expectedRevision) {
+        SessionRuntime current = getOrCreate(sessionId);
+        if (current.isRunning()) {
+            throw new IllegalStateException("SESSION_ALREADY_RUNNING");
+        }
+        journalStore.restoreCheckpoint(sessionId, runId, expectedRevision);
+        SessionRecovery.RecoveryResult recovery = sessionRecovery.recover(sessionId);
+        SessionRuntime replacement = runtimeCreator.create(sessionId, recovery);
+        sessions.put(sessionId, replacement);
+        current.close();
+        return replacement;
+    }
+
+    /** 从历史终态 Run 状态创建候选 Runtime，供新子 Run 原子受理。 */
+    public synchronized SessionRuntime runtimeFromCheckpoint(String sessionId, String runId) {
+        SessionRuntime current = getOrCreate(sessionId);
+        if (current.isRunning()) {
+            throw new IllegalStateException("SESSION_ALREADY_RUNNING");
+        }
+        return runtimeCreator.create(sessionId, sessionRecovery.recoverAt(sessionId, runId));
+    }
+
+    /** 在新子 Run 已持久化受理后切换当前 Runtime。 */
+    public synchronized void replace(String sessionId, SessionRuntime expected, SessionRuntime replacement) {
+        if (!sessions.replace(sessionId, expected, replacement)) {
+            replacement.close();
+            throw new IllegalStateException("SESSION_REVISION_CONFLICT");
+        }
+        expected.close();
+    }
+
     /**
      * 将持久化 Journal 投影为模型历史并创建新的活动运行时。
      */

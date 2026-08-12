@@ -14,6 +14,22 @@ public final class PendingInputQueue {
     private final Deque<Message> followups = new ArrayDeque<>();
     private final Deque<Message> steers = new ArrayDeque<>();
 
+    /** 从结构化 SessionState 恢复尚未消费的输入。 */
+    public synchronized void restore(List<java.util.Map<String, Object>> persisted) {
+        followups.clear();
+        steers.clear();
+        if (persisted == null) return;
+        for (java.util.Map<String, Object> item : persisted) {
+            String id = String.valueOf(item.getOrDefault("messageId", ""));
+            String text = String.valueOf(item.getOrDefault("text", ""));
+            if (id.isBlank() || text.isBlank()) continue;
+            RunMode runMode = RunMode.from(String.valueOf(item.getOrDefault("runMode", "agent")));
+            Message message = new Message(id, text, runMode);
+            if ("steer".equals(item.get("mode"))) steers.addLast(message);
+            else followups.addLast(message);
+        }
+    }
+
     /** 将一条输入追加到追随队列。 */
     public synchronized Message addFollowup(String text, RunMode mode) {
         Message message = new Message(UUID.randomUUID().toString(), text, mode);

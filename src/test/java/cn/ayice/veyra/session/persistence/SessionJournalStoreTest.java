@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,6 +52,17 @@ class SessionJournalStoreTest {
         Files.writeString(path, "{broken}\n{}\n");
 
         assertThrows(IllegalStateException.class, () -> store.read("s1"));
+    }
+
+    @Test
+    void deletesJournalAndClearsItsSessionRecord() {
+        SessionJournalStore store = store();
+        store.append("s1", null, SessionJournalTypes.SESSION_CREATED, Map.of(), true);
+
+        assertTrue(store.delete("s1"));
+        assertFalse(Files.exists(store.journalPath("s1")));
+        assertTrue(store.listSessions().isEmpty());
+        assertFalse(store.delete("s1"));
     }
 
     private SessionJournalStore store() {

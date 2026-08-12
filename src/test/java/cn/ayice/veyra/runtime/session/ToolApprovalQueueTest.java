@@ -46,7 +46,7 @@ class ToolApprovalQueueTest {
                 new SessionPathResolver(tempDir.toString(), tempDir.toString()));
         SessionJournalRecorder recorder = new SessionJournalRecorder("session-1", journal, true);
         recorder.bindRun("run-1");
-        ToolApprovalQueue approvals = new ToolApprovalQueue(new SessionAgentEventSink(events, recorder));
+        ToolApprovalQueue approvals = new ToolApprovalQueue(new SessionAgentEventSink(events), recorder);
         List<AgentEvent> received = new CopyOnWriteArrayList<>();
         CountDownLatch requested = new CountDownLatch(1);
         events.addSubscriber(new AgentEventSubscriber() {

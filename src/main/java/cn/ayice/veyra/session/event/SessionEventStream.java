@@ -17,7 +17,13 @@ public class SessionEventStream {
     private volatile String runId;
 
     public SessionEventStream(String sessionId) {
+        this(sessionId, 0L);
+    }
+
+    /** 使用持久化全局 revision 创建流，避免 Runtime 重建后 SSE 序号回退。 */
+    public SessionEventStream(String sessionId, long initialRevision) {
         this.sessionId = sessionId;
+        this.seq.set(Math.max(0L, initialRevision));
     }
 
     /**

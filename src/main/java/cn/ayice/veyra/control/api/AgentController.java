@@ -14,8 +14,9 @@ import cn.ayice.veyra.control.dto.run.CreateFollowupResponse;
 import cn.ayice.veyra.control.dto.session.SessionListResponse;
 import cn.ayice.veyra.control.dto.session.SessionResponse;
 import cn.ayice.veyra.control.dto.session.TranscriptResponse;
-import cn.ayice.veyra.control.dto.session.SessionHistoryResponse;
 import cn.ayice.veyra.control.dto.session.UpdateSessionSettingsRequest;
+import cn.ayice.veyra.control.dto.session.CheckpointListResponse;
+import cn.ayice.veyra.control.dto.session.RestoreCheckpointRequest;
 import cn.ayice.veyra.control.exception.AgentApiException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -72,6 +73,15 @@ public class AgentController {
         return ApiResponse.success(application.listSessions());
     }
 
+    /** 删除当前未运行的会话及其持久化 Journal。 */
+    @DeleteMapping("/sessions/{sessionId}")
+    public ApiResponse<Map<String, Object>> deleteSession(@PathVariable("sessionId") String sessionId) {
+        if (!application.deleteSession(sessionId)) {
+            throw new AgentApiException(HttpStatus.CONFLICT, "session is running or does not exist");
+        }
+        return ApiResponse.success(Map.of("ok", true));
+    }
+
     /**
      * 返回指定会话的当前状态或 API 表示。
      */
@@ -100,14 +110,6 @@ public class AgentController {
     }
 
     /**
-     * 返回完成惰性恢复后的稳定事件历史。
-     */
-    @GetMapping("/sessions/{sessionId}/history")
-    public ApiResponse<SessionHistoryResponse> history(@PathVariable("sessionId") String sessionId) {
-        return ApiResponse.success(application.stableHistory(sessionId));
-    }
-
-    /**
      * 根据输入创建对应对象。
      */
     @PostMapping("/sessions/{sessionId}/runs")
@@ -116,7 +118,26 @@ public class AgentController {
             @RequestBody CreateRunRequest request
     ) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(ApiResponse.success(application.createRun(sessionId, request.input(), request.mode())));
+                .body(ApiResponse.success(application.createRun(
+                        sessionId, request.input(), request.mode(), request.parentRunId()
+                )));
+    }
+
+    /** 返回 Session 的终态 Run 检查点。 */
+    @GetMapping("/sessions/{sessionId}/checkpoints")
+    public ApiResponse<CheckpointListResponse> checkpoints(@PathVariable("sessionId") String sessionId) {
+        return ApiResponse.success(application.checkpoints(sessionId));
+    }
+
+    /** 持久化当前检查点选择并恢复完整 Agent 状态。 */
+    @PostMapping("/sessions/{sessionId}/checkpoint-restorations")
+    public ApiResponse<SessionResponse> restoreCheckpoint(
+            @PathVariable("sessionId") String sessionId,
+            @RequestBody RestoreCheckpointRequest request
+    ) {
+        return ApiResponse.success(application.restoreCheckpoint(
+                sessionId, request.runId(), request.expectedRevision()
+        ));
     }
 
     /** 将运行期间的新输入加入默认追随队列。 */

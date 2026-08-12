@@ -40,6 +40,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
     private final SlashCommandDispatcher slashCommands;
     private final SessionRunQueue runQueue;
     private final SessionJournalRecorder journalRecorder;
+    private final cn.ayice.veyra.session.persistence.SessionJournalStore journalStore;
     private final PendingInputQueue pendingInputs;
     private volatile String runMode;
     private volatile String lastRunStatus;
@@ -58,7 +59,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             Executor executor
     ) {
         this(sessionId, events, confirmation, agentLoop, chatLoop, permissionContextStore,
-                slashCommands, executor, null, "chat", "idle");
+                slashCommands, executor, null, null, "chat", "idle");
     }
 
     /**
@@ -74,6 +75,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             SlashCommandDispatcher slashCommands,
             Executor executor,
             SessionJournalRecorder journalRecorder,
+            cn.ayice.veyra.session.persistence.SessionJournalStore journalStore,
             String runMode,
             String lastRunStatus
     ) {
@@ -86,6 +88,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         this.slashCommands = slashCommands;
         this.runQueue = new SessionRunQueue(executor);
         this.journalRecorder = journalRecorder;
+        this.journalStore = journalStore;
         this.pendingInputs = agentLoop.pendingInputs();
         this.runMode = runMode == null || runMode.isBlank() ? "chat" : runMode;
         this.lastRunStatus = lastRunStatus == null ? "idle" : lastRunStatus;
@@ -141,19 +144,50 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
         PermissionMode mode = context == null || context.mode() == null
                 ? PermissionMode.ASK_EVERY_TIME
                 : context.mode();
+        cn.ayice.veyra.session.persistence.SessionIndex index = journalStore == null
+                ? cn.ayice.veyra.session.persistence.SessionIndex.empty(sessionId)
+                : journalStore.index(sessionId);
         return new SessionState(
                 sessionId,
                 workingDir == null ? "" : workingDir.toString(),
                 mode.configValue(),
                 runMode,
-                lastRunStatus
+                lastRunStatus,
+                index.appliedRevision(),
+                index.currentRunId(),
+                index.activeRunId(),
+                index.runs().entrySet().stream().collect(java.util.stream.Collectors.toMap(
+                        java.util.Map.Entry::getKey,
+                        entry -> new cn.ayice.veyra.session.RunNodeState(
+                                entry.getValue().runId(), entry.getValue().parentRunId(),
+                                entry.getValue().startedRevision(), entry.getValue().terminalRevision(),
+                                entry.getValue().status(), entry.getValue().snapshotAvailable()
+                        ),
+                        (left, right) -> left,
+                        java.util.LinkedHashMap::new
+                )),
+                journalStore == null
+                        ? cn.ayice.veyra.session.state.AgentState.empty()
+                        : journalStore.recoveryAgentState(sessionId)
         );
+    }
+
+    /** 当前会话是否仍有已受理且尚未终止的 Run。 */
+    public boolean isRunning() {
+        return "running".equals(lastRunStatus);
     }
 
     /**
      * 原子更新当前会话的工作目录和权限模式并返回新快照。
      */
     public synchronized SessionState updateSettings(String workingDir, String permissionMode, String requestedRunMode) {
+        return updateSettings(workingDir, permissionMode, requestedRunMode, null);
+    }
+
+    /** 使用 expectedRevision 更新 Session 设置。 */
+    public synchronized SessionState updateSettings(
+            String workingDir, String permissionMode, String requestedRunMode, Long expectedRevision
+    ) {
         Path nextWorkingDir = workingDir == null || workingDir.isBlank()
                 ? null
                 : Path.of(workingDir);
@@ -179,7 +213,8 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
             journalRecorder.recordSettings(
                     normalized.workingDir(),
                     normalized.permissionMode(),
-                    normalized.runMode()
+                    normalized.runMode(),
+                    expectedRevision
             );
         }
         PermissionContext committed = next;
@@ -192,6 +227,11 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
      * 原子持久化 Run 受理事实；已有未终止 Run 时拒绝。
      */
     public synchronized boolean acceptRun(String runId, String input, String mode) {
+        return acceptRun(runId, input, mode, null);
+    }
+
+    /** 从当前位置或指定历史终态 Run 受理一次新 Run。 */
+    public synchronized boolean acceptRun(String runId, String input, String mode, String parentRunId) {
         if (journalRecorder == null) {
             return true;
         }
@@ -201,6 +241,7 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
                     runId,
                     input,
                     mode,
+                    parentRunId,
                     context.workingDir(),
                     context.mode().configValue(),
                     runMode
@@ -290,6 +331,14 @@ public class SessionRuntime implements RunTarget, AutoCloseable {
      */
     @Override
     public void emit(String type, Map<String, Object> payload) {
+        events.emit(type, payload);
+    }
+
+    /** 同时写入领域事实并发布实时通知。 */
+    public void emitStable(String type, Map<String, Object> payload) {
+        if (journalRecorder != null) {
+            journalRecorder.recordDomainEvent(type, payload);
+        }
         events.emit(type, payload);
     }
 

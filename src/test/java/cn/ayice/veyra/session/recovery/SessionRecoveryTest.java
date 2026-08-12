@@ -77,10 +77,9 @@ class SessionRecoveryTest {
         assertEquals("interrupted", result.lastRunStatus());
         assertInstanceOf(ToolExecutionResultMessage.class, result.agentHistory().get(2));
         assertTrue(((ToolExecutionResultMessage) result.agentHistory().get(2)).text().contains("UNKNOWN"));
-        assertTrue(result.stableEvents().stream().anyMatch(event ->
-                "assistant.message.completed".equals(event.type())
-                        && event.payload().containsKey("toolCalls")));
-        assertTrue(result.stableEvents().stream().anyMatch(event -> "run.interrupted".equals(event.type())));
+        assertEquals(cn.ayice.veyra.session.state.AgentPhase.TERMINAL_INTERRUPTED,
+                result.agentState().run().phase());
+        assertTrue(result.agentState().toolCalls().containsKey("call-1"));
         int sizeAfterFirstRecovery = store.read("s1").size();
         recovery.recover("s1");
         assertEquals(sizeAfterFirstRecovery, store.read("s1").size());
@@ -134,7 +133,7 @@ class SessionRecoveryTest {
     }
 
     @Test
-    void projectsStableUiEventsWithoutPollutingModelContext() {
+    void projectsStructuredUiStateWithoutPollutingModelContext() {
         SessionJournalStore store = store();
         createSessionAndRun(store, "s1", "r1");
         store.append("s1", "r1", SessionJournalTypes.PERMISSION_REQUESTED, Map.of(
@@ -159,21 +158,20 @@ class SessionRecoveryTest {
         SessionRecovery.RecoveryResult result = recovery(store).recover("s1");
 
         assertEquals(2, result.agentHistory().size());
-        assertEquals(List.of(
-                        "run.started", "user.message", "permission.requested", "permission.resolved",
-                        "todo.updated", "task.started", "task.completed",
-                        "assistant.message.completed", "run.completed"
-                ), result.stableEvents().stream().map(event -> event.type()).toList());
+        assertEquals(1, result.agentState().todos().size());
+        assertEquals("完成", result.agentState().tasks().get("task-1").get("content"));
+        assertTrue(result.agentState().approvals().isEmpty());
     }
 
     @Test
-    void hidesThinkingForAgentRecoveryButKeepsItForChatRecovery() {
+    void keepsThinkingInDomainStateForBothRunModes() {
         SessionJournalStore store = store();
         store.append("s1", null, SessionJournalTypes.SESSION_CREATED, Map.of(
                 "workingDir", tempDir.toString(), "permissionMode", "ask"
         ), true);
 
-        store.append("s1", "agent-run", SessionJournalTypes.RUN_STARTED, Map.of("mode", "agent"), false);
+        store.append("s1", "agent-run", SessionJournalTypes.RUN_STARTED,
+                Map.of("mode", "agent", "parentRunId", ""), false);
         store.append("s1", "agent-run", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
                 JournalMessageCodec.encode(AiMessage.builder()
                         .text("Agent 回答")
@@ -182,7 +180,8 @@ class SessionRecoveryTest {
         store.append("s1", "agent-run", SessionJournalTypes.RUN_COMPLETED,
                 Map.of("reason", "completed"), true);
 
-        store.append("s1", "chat-run", SessionJournalTypes.RUN_STARTED, Map.of("mode", "chat"), false);
+        store.append("s1", "chat-run", SessionJournalTypes.RUN_STARTED,
+                Map.of("mode", "chat", "parentRunId", "agent-run"), false);
         store.append("s1", "chat-run", SessionJournalTypes.ASSISTANT_MESSAGE_RECORDED,
                 JournalMessageCodec.encode(AiMessage.builder()
                         .text("Chat 回答")
@@ -191,14 +190,14 @@ class SessionRecoveryTest {
         store.append("s1", "chat-run", SessionJournalTypes.RUN_COMPLETED,
                 Map.of("reason", "completed"), true);
 
-        List<cn.ayice.veyra.session.event.AgentEvent> assistantEvents = recovery(store).recover("s1")
-                .stableEvents().stream()
-                .filter(event -> "assistant.message.completed".equals(event.type()))
+        List<cn.ayice.veyra.session.state.MessageState> assistantMessages = recovery(store).recover("s1")
+                .agentState().messages().stream()
+                .filter(message -> message.role() == cn.ayice.veyra.session.state.MessageRole.ASSISTANT)
                 .toList();
 
-        assertEquals(2, assistantEvents.size());
-        assertFalse(assistantEvents.get(0).payload().containsKey("thinking"));
-        assertEquals("Chat 思考过程", assistantEvents.get(1).payload().get("thinking"));
+        assertEquals(2, assistantMessages.size());
+        assertEquals("Agent 内部推理", assistantMessages.get(0).thinking());
+        assertEquals("Chat 思考过程", assistantMessages.get(1).thinking());
     }
 
     @Test
@@ -211,9 +210,9 @@ class SessionRecoveryTest {
 
         SessionRecovery.RecoveryResult result = recovery(store).recover("s1");
 
-        assertTrue(result.stableEvents().stream().anyMatch(event ->
-                SessionJournalTypes.PERMISSION_INTERRUPTED.equals(event.type())
-                        && "approval-1".equals(event.payload().get("approvalId"))));
+        assertTrue(result.agentState().approvals().isEmpty());
+        assertTrue(store.read("s1").stream().anyMatch(event ->
+                SessionJournalTypes.PERMISSION_INTERRUPTED.equals(event.type())));
     }
 
     private void createSessionAndRun(SessionJournalStore store, String sessionId, String runId) {

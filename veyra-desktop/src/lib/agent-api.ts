@@ -11,6 +11,53 @@ export type AgentSessionResponse = {
   permissionMode: AgentPermissionMode
   runMode: AgentRunMode
   lastRunStatus?: string | null
+  revision: number
+  currentRunId?: string | null
+  activeRunId?: string | null
+  runs: Record<string, AgentRunNode>
+  agent: AgentStateView
+}
+
+export type AgentRunNode = {
+  runId: string
+  parentRunId?: string | null
+  startedRevision: number
+  terminalRevision?: number | null
+  status: string
+  snapshotAvailable: boolean
+}
+
+export type AgentToolCallState = {
+  toolUseId: string
+  name: string
+  arguments: string
+  phase: string
+  approvalId?: string | null
+  outcome?: string | null
+  resultContent: string
+  recoveryPolicy: string
+}
+
+export type AgentMessageState = {
+  messageId: string
+  sourceRevision: number
+  runId?: string | null
+  role: "USER" | "ASSISTANT" | "TOOL"
+  text: string
+  thinking: string
+  visible: boolean
+  toolCalls: AgentToolCallState[]
+}
+
+export type AgentStateView = {
+  run?: { runId: string; phase: string; finalResponse: string } | null
+  messages: AgentMessageState[]
+  toolCalls: Record<string, AgentToolCallState>
+  approvals: Record<string, Record<string, unknown>>
+  pendingInputs: Array<Record<string, unknown>>
+  todos: Array<Record<string, unknown>>
+  tasks: Record<string, Record<string, unknown>>
+  contextSummary: Record<string, unknown>
 }
 
 export type AgentSessionRecord = {
@@ -43,6 +90,15 @@ export type AgentStableEvent = {
 export type AgentRunResponse = {
   runId: string
   accepted: boolean
+}
+
+export type AgentCheckpoint = {
+  runId: string
+  parentRunId?: string | null
+  terminalRevision: number
+  status: string
+  current: boolean
+  restorable: boolean
 }
 
 export type AgentFollowupResponse = {
@@ -128,6 +184,13 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
     listSessions: () =>
       requestJson<{ items: AgentSessionRecord[] }>(fetcher, "/sessions"),
 
+    deleteSession: (sessionId: string) =>
+      requestJson<{ ok: boolean }>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}`,
+        { method: "DELETE" }
+      ),
+
     session: (sessionId: string) =>
       requestJson<AgentSessionResponse>(
         fetcher,
@@ -140,19 +203,38 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
         `/sessions/${encodePathSegment(sessionId)}/transcript`
         ),
 
-    history: (sessionId: string) =>
-      requestJson<{ items: AgentStableEvent[] }>(
-        fetcher,
-        `/sessions/${encodePathSegment(sessionId)}/history`
-      ),
-
-    createRun: (sessionId: string, input: string, mode: AgentRunMode) =>
+    createRun: (
+      sessionId: string,
+      input: string,
+      mode: AgentRunMode,
+      parentRunId?: string
+    ) =>
       requestJson<AgentRunResponse>(
         fetcher,
         `/sessions/${encodePathSegment(sessionId)}/runs`,
         {
           method: "POST",
-          body: JSON.stringify({ input, mode }),
+          body: JSON.stringify({ input, mode, parentRunId }),
+        }
+      ),
+
+    checkpoints: (sessionId: string) =>
+      requestJson<{ items: AgentCheckpoint[] }>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/checkpoints`
+      ),
+
+    restoreCheckpoint: (
+      sessionId: string,
+      runId: string,
+      expectedRevision: number
+    ) =>
+      requestJson<AgentSessionResponse>(
+        fetcher,
+        `/sessions/${encodePathSegment(sessionId)}/checkpoint-restorations`,
+        {
+          method: "POST",
+          body: JSON.stringify({ runId, expectedRevision }),
         }
       ),
 
@@ -200,6 +282,7 @@ export function createAgentApiClient(fetcher: AgentFetch = globalThis.fetch) {
         workingDir: string
         permissionMode: AgentPermissionMode
         runMode: AgentRunMode
+        expectedRevision?: number
       }
     ) =>
       requestJson<AgentSessionResponse>(
